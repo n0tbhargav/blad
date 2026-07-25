@@ -278,22 +278,13 @@ fn print_stats(input: &Path, r: &blad_archive::ArchiveReport) {
         right(human(blad_mem::rss_highwater())).add_attribute(Attribute::Bold),
     ]);
 
-    // The heap counter sees our allocations; RSS sees everything else too — mapped
-    // libraries, allocator overhead, and libjxl's own working set. The gap is the part
-    // that is not our data structures.
-    let peak_heap = t.encode.heap_peak.max(t.verify.heap_peak);
-    let rss = blad_mem::rss_highwater();
-
-    println!("{}", input.display());
-    println!("{tb}");
     println!(
-        "  payload {} · skeleton {} · heap {} · RSS {} ({:.0}% non-heap)",
+        "{}  ({} payload, {} skeleton)",
+        input.display(),
         human(r.payload_len),
         human(r.skeleton_len),
-        human(peak_heap),
-        human(rss),
-        100.0 * rss.saturating_sub(peak_heap) as f64 / rss.max(1) as f64,
     );
+    println!("{tb}");
     println!();
 }
 
@@ -387,10 +378,9 @@ fn cmd_archive(
     }
 
     if total_in > 0 && !json {
-        let ratio = total_out as f64 / total_in as f64;
         // A total row only says something new when there is more than one file.
         if inputs.len() > 1 {
-            let saved = 1.0 - ratio;
+            let saved = 1.0 - total_out as f64 / total_in as f64;
             t.add_row(vec![
                 Cell::new("total").add_attribute(Attribute::Bold),
                 dim(right(human(total_in))),
@@ -400,14 +390,9 @@ fn cmd_archive(
             ]);
         }
         println!("{t}");
-        let n = inputs.len() - failures;
-        println!(
-            "  ratio {ratio:.4} · byte-exact reconstruction verified for {n} file{}",
-            if n == 1 { "" } else { "s" }
-        );
+        println!("  byte-exact reconstruction verified");
         if stats && inputs.len() > 1 {
-            println!("  note: peak RSS is a process-wide high-water mark; for per-file");
-            println!("  figures archive one file per invocation.");
+            println!("  (peak RSS is process-wide; archive one file per run for per-file figures)");
         }
     }
     if failures > 0 {
@@ -497,7 +482,7 @@ fn cmd_verify(archives: &[PathBuf], quick: bool) -> Result<()> {
     }
     println!("{t}");
     if quick && failures == 0 {
-        println!("  stored bytes checked; run without --quick to prove the decode path");
+        println!("  stored bytes only; drop --quick to prove the decode path");
     }
     if failures > 0 {
         bail!("{failures} of {} archive(s) failed", archives.len());
