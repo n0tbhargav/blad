@@ -6,10 +6,9 @@ equivalent pixels, the same bytes.
 ```
 $ blad archive x1d-xcd45-03.3FR
 
- file                   original  stored    ratio   saved
+ file              original  stored   saved
 ──────────────────────────────────────────────────────────
- x1d-xcd45-03.3FR.blad  105.3 MB   55.8 MB  0.5303  47.0%
-
+ x1d-xcd45-03.3FR  105.3 MB  55.8 MB  47.0%  █████▋······
   byte-exact reconstruction verified
 
 $ blad restore x1d-xcd45-03.3FR.blad -o out.3FR
@@ -139,9 +138,11 @@ Effort 1 costs about 5% ratio for a 3× speedup, which is reasonable for bulk wo
 
 ## Status
 
-Early. `archive` / `verify` / `restore` work and are tested on real Hasselblad files,
-but the format will change before 1.0 — the manifest is not yet checksummed, and there
-is no error-correcting parity. Don't use it as your only copy of anything.
+Early. `archive` / `verify` / `restore` / `thumb` work and are tested on real Hasselblad
+files, and every archive proves itself before it is written. But the format is still
+moving — it has changed four times already — and there is no error-correcting parity, so
+corruption can be detected but not repaired. **Don't use it as your only copy of
+anything.**
 
 ## License
 
