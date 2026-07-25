@@ -362,15 +362,21 @@ metadata fidelity, GPU backend proven to match the CPU path within a stated tole
 
 1. ~~Vendored libjxl via FFI.~~ **Done** — see above. 1.6-1.8x faster encode,
    self-contained binary.
-2. **Format v3**, doing both breaking changes at once, before archives exist in the wild:
-   - checksum and duplicate the manifest (today one flipped bit in the 888-byte footer
-     makes a 56 MB archive unreadable);
-   - reserve a small ready-to-display preview **near the head**, so a thumbnailer can
-     read it with one seek and no JXL decode.
-3. **`blad thumb`** — extract the embedded preview. Nearly free: `blad-container`
-   already identifies it as its own addressable blob (segment 1 of the X1D 3FR is a
-   1440×1080 8-bit RGB preview), so it decodes without touching the 100 MB mosaic. Also
-   delivers random access into an archive.
+2. ~~Format v3.~~ **Done.** Head thumbnail (`u32` length + JPEG after the magic) plus an
+   8-byte SHA-256 prefix over the manifest in the footer. The digest is checked *before*
+   the JSON is parsed: a flipped bit inside a manifest *number* stays valid JSON and
+   would silently yield wrong offsets — the failure that looks like a codec bug and is
+   not.
+3. ~~`blad thumb`.~~ **Done.** 512px JPEG, **0.050%** of a 56 MB archive, read with one
+   seek and no JXL decode. Source is the smallest RGB segment — normally the camera's
+   own embedded preview, already demosaiced and colour-rendered. CFA-only sources get an
+   empty thumbnail rather than a failed archive.
+   - Downscaling runs in **linear light**. A test averages a black/white checkerboard and
+     asserts ~188 (the photometric mean), not 128 (what averaging gamma-encoded values
+     gives). Getting this wrong is what makes most software's thumbnails too dark.
+   - **Orientation is applied.** The X1D writes tag 274 = 8 and stores its preview
+     landscape; without this every portrait photo shows up sideways in Finder. Caught by
+     looking at the output image, not by a passing test.
 4. **OS thumbnail integration.** Needs platform shell code, not just a CLI:
    macOS = Quick Look app extension (`QLThumbnailProvider`) in a signed `.app`;
    Windows = `IThumbnailProvider` COM shell extension DLL; Linux = a `.thumbnailer`

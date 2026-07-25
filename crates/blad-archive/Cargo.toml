@@ -11,6 +11,7 @@ blad-container.workspace = true
 blad-cfa.workspace = true
 blad-codec.workspace = true
 blad-mem.workspace = true
+blad-thumb.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true

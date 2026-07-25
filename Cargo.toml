@@ -6,6 +6,7 @@ members = [
     "crates/blad-codec",
     "crates/blad-archive",
     "crates/blad-mem",
+    "crates/blad-thumb",
     "bin/blad",
 ]
 
@@ -21,6 +22,7 @@ blad-cfa = { path = "crates/blad-cfa", version = "0.0.1" }
 blad-codec = { path = "crates/blad-codec", version = "0.0.1" }
 blad-archive = { path = "crates/blad-archive", version = "0.0.1" }
 blad-mem = { path = "crates/blad-mem", version = "0.0.1" }
+blad-thumb = { path = "crates/blad-thumb", version = "0.0.1" }
 
 anyhow = "1"
 thiserror = "2"
@@ -31,6 +33,7 @@ clap = { version = "4", features = ["derive"] }
 comfy-table = "7"
 libc = "0.2"
 bytemuck = "1"
+jpeg-encoder = "0.7"
 # default features pull in the `image` crate, which we do not want.
 jpegxl-rs = { version = "0.15", default-features = false, features = ["vendored"] }
 

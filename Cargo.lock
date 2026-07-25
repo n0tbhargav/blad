@@ -86,6 +86,7 @@ dependencies = [
  "blad-codec",
  "blad-container",
  "blad-mem",
+ "blad-thumb",
  "serde",
  "serde_json",
  "sha2",
@@ -121,6 +122,14 @@ name = "blad-mem"
 version = "0.0.1"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "blad-thumb"
+version = "0.0.1"
+dependencies = [
+ "jpeg-encoder",
+ "thiserror",
 ]
 
 [[package]]
@@ -412,6 +421,12 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "jpeg-encoder"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b0b36cbb4e6704f12f5b5d7b01dac593982c6550859ebd5a66fb15c9ea27fd5"
 
 [[package]]
 name = "jpegxl-rs"

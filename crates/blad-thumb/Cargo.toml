@@ -1,0 +1,11 @@
+[package]
+name = "blad-thumb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Thumbnail generation for blad archives"
+
+[dependencies]
+thiserror.workspace = true
+jpeg-encoder.workspace = true

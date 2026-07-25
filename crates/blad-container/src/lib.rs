@@ -82,10 +82,21 @@ pub struct Segment {
 }
 
 /// A complete, gapless, non-overlapping description of a file.
+fn orientation_default() -> u16 {
+    1
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Layout {
     pub container: String,
     pub total_len: u64,
+    /// TIFF/Exif orientation (tag 274). 1 means "already upright".
+    ///
+    /// Stored pixels are frequently *not* upright: cameras record the sensor readout as
+    /// captured and note the rotation separately. Anything that displays the pixels
+    /// without consulting this — a thumbnailer, say — shows the photo on its side.
+    #[serde(default = "orientation_default")]
+    pub orientation: u16,
     pub segments: Vec<Segment>,
 }
 
@@ -176,6 +187,7 @@ pub fn analyze(path: &Path) -> Result<Layout> {
 pub(crate) fn tile(
     container: &str,
     total_len: u64,
+    orientation: u16,
     mut regions: Vec<(u64, u64, ImageSpec)>,
 ) -> Result<Layout> {
     regions.sort_by_key(|(off, _, _)| *off);
@@ -214,6 +226,7 @@ pub(crate) fn tile(
     let layout = Layout {
         container: container.to_string(),
         total_len,
+        orientation,
         segments,
     };
     layout.validate()?;
@@ -238,7 +251,7 @@ mod tests {
     #[test]
     fn tile_fills_gaps_and_validates() {
         // 100-byte file with one 40-byte image region at offset 20.
-        let l = tile("test", 100, vec![(20, 40, spec(4, 5))]).unwrap();
+        let l = tile("test", 100, 1, vec![(20, 40, spec(4, 5))]).unwrap();
         assert_eq!(l.segments.len(), 3);
         assert_eq!(l.segments[0].kind, SegmentKind::Verbatim);
         assert_eq!(l.segments[0].len, 20);
@@ -251,7 +264,7 @@ mod tests {
 
     #[test]
     fn tile_sorts_out_of_order_regions() {
-        let l = tile("test", 100, vec![(60, 20, spec(2, 5)), (10, 20, spec(2, 5))]).unwrap();
+        let l = tile("test", 100, 1, vec![(60, 20, spec(2, 5)), (10, 20, spec(2, 5))]).unwrap();
         l.validate().unwrap();
         let offsets: Vec<u64> = l.segments.iter().map(|s| s.src_offset).collect();
         assert_eq!(offsets, vec![0, 10, 30, 60, 80]);
@@ -259,21 +272,21 @@ mod tests {
 
     #[test]
     fn image_region_at_file_start_and_end_needs_no_padding() {
-        let l = tile("test", 40, vec![(0, 40, spec(4, 5))]).unwrap();
+        let l = tile("test", 40, 1, vec![(0, 40, spec(4, 5))]).unwrap();
         assert_eq!(l.segments.len(), 1);
         assert_eq!(l.skeleton_len(), 0);
     }
 
     #[test]
     fn overlapping_regions_are_rejected() {
-        let e = tile("test", 100, vec![(10, 30, spec(2, 5)), (20, 20, spec(2, 5))]);
+        let e = tile("test", 100, 1, vec![(10, 30, spec(2, 5)), (20, 20, spec(2, 5))]);
         assert!(e.is_err());
     }
 
     #[test]
     fn spec_mismatch_is_rejected() {
         // Claim 40 bytes but the spec describes 4*5*1*2 = 40 … make it disagree.
-        let bad = tile("test", 100, vec![(0, 39, spec(4, 5))]);
+        let bad = tile("test", 100, 1, vec![(0, 39, spec(4, 5))]);
         assert!(bad.is_err());
     }
 
@@ -282,6 +295,7 @@ mod tests {
         let l = Layout {
             container: "test".into(),
             total_len: 100,
+            orientation: 1,
             segments: vec![Segment {
                 src_offset: 0,
                 len: 50,

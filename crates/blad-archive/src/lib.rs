@@ -26,17 +26,24 @@
 //! # Format
 //!
 //! ```text
-//! "BLAD" 0x02              magic + format version
+//! "BLAD" 0x03              magic + format version
+//! u32-le thumb_len
+//! thumbnail (JPEG)         at the head on purpose: a file browser reads a preview
+//!                          with one seek, knowing nothing about JPEG XL or the
+//!                          manifest format
 //! body                     segments in file order; verbatim bytes inline,
 //!                          image segments as their encoded parts
 //! manifest (JSON, UTF-8)   self-describing on purpose: archives should stay
 //!                          readable in twenty years without this source code
 //! u32-le manifest_len
+//! 8 bytes                  SHA-256 prefix over the manifest
 //! ```
 //!
 //! The manifest is a **footer** because blob sizes are only known after encoding.
 //! Putting it last lets the body stream straight to the output file instead of being
-//! accumulated in memory first.
+//! accumulated in memory first. It carries its own digest because a single flipped bit
+//! in a few hundred bytes would otherwise make an entire multi-gigabyte archive
+//! unreadable, with no way to tell that the payload was fine.
 
 use blad_cfa::Planes;
 use blad_codec::{Channels, Codec, Depth};
@@ -45,8 +52,12 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-pub const MAGIC: &[u8; 5] = b"BLAD\x02";
-const FOOTER_LEN: u64 = 4;
+pub const MAGIC: &[u8; 5] = b"BLAD\x03";
+/// `u32` manifest length + an 8-byte digest prefix over the manifest bytes.
+const FOOTER_LEN: u64 = 12;
+/// Bytes of SHA-256 kept to detect manifest corruption. Eight is ample: this guards
+/// against bit rot, not a forgery attempt.
+const MANIFEST_DIGEST_LEN: usize = 8;
 const CHUNK: usize = 1 << 20;
 
 #[derive(Debug, thiserror::Error)]
@@ -298,6 +309,75 @@ pub struct Timings {
     pub total: std::time::Duration,
 }
 
+/// Pick a segment to build the thumbnail from.
+///
+/// Prefers the *smallest* RGB segment, which is normally the camera's own embedded
+/// preview — already demosaiced and colour-rendered, so it looks like the photographer's
+/// intent rather than raw sensor response. A CFA segment cannot be used: turning a
+/// mosaic into a viewable image needs demosaicing, which belongs to the pipeline, not
+/// here.
+fn thumb_source(layout: &Layout) -> Option<(&blad_container::Segment, &ImageSpec)> {
+    layout
+        .image_segments()
+        .filter(|(_, _, spec)| {
+            spec.layout == PixelLayout::Chunky && spec.samples_per_pixel == 3
+        })
+        .min_by_key(|(_, seg, _)| seg.len)
+        .map(|(_, seg, spec)| (seg, spec))
+}
+
+/// Build a thumbnail by reading one segment out of the source file.
+///
+/// Returns an empty vector when there is nothing usable — a raw with no embedded preview,
+/// say. A missing thumbnail is a cosmetic loss and must never fail an archive.
+fn make_thumbnail(src: &Path, layout: &Layout) -> Vec<u8> {
+    let Some((seg, spec)) = thumb_source(layout) else {
+        return Vec::new();
+    };
+    let bps = usize::from(spec.bits_per_sample / 8);
+    let read = || -> std::io::Result<Vec<u8>> {
+        let mut f = std::fs::File::open(src)?;
+        f.seek(SeekFrom::Start(seg.src_offset))?;
+        let mut buf = vec![0u8; seg.len as usize];
+        f.read_exact(&mut buf)?;
+        Ok(buf)
+    };
+    let Ok(bytes) = read() else {
+        return Vec::new();
+    };
+    blad_thumb::thumbnail(
+        &bytes,
+        spec.width,
+        spec.height,
+        bps,
+        spec.little_endian,
+        layout.orientation,
+        blad_thumb::MAX_EDGE,
+    )
+    .unwrap_or_default()
+}
+
+/// Read just the embedded thumbnail. One seek, no decoding, no manifest parsing.
+///
+/// This is what a file browser integration calls, so it must stay trivial: any tool that
+/// can read four bytes and a JPEG can show a preview of a blad archive.
+pub fn thumbnail(archive_path: &Path) -> Result<Vec<u8>> {
+    let mut f = std::fs::File::open(archive_path)?;
+    let mut head = [0u8; 9];
+    f.read_exact(&mut head).map_err(|_| Error::NotAnArchive)?;
+    if head[0..4] != MAGIC[0..4] {
+        return Err(Error::NotAnArchive);
+    }
+    if head[4] > MAGIC[4] {
+        return Err(Error::FutureVersion(head[4]));
+    }
+    let len = u32::from_le_bytes([head[5], head[6], head[7], head[8]]) as usize;
+    let mut buf = vec![0u8; len];
+    f.read_exact(&mut buf)
+        .map_err(|_| Error::Corrupt("thumbnail truncated".into()))?;
+    Ok(buf)
+}
+
 /// Result of a successful [`archive`].
 #[derive(Debug, Clone)]
 pub struct ArchiveReport {
@@ -344,9 +424,14 @@ pub fn archive(src: &Path, dst: &Path, codec: &dyn Codec) -> Result<ArchiveRepor
     let mut original = Sha256::new();
     let mut blobs = Vec::new();
 
+    // Written through `body.inner` rather than `body`, so the body checksum covers the
+    // segments only and stays independent of the thumbnail.
+    let thumb = make_thumbnail(src, &layout);
     {
         let inner = &mut body.inner;
         inner.write_all(MAGIC)?;
+        inner.write_all(&(thumb.len() as u32).to_le_bytes())?;
+        inner.write_all(&thumb)?;
     }
 
     for (i, seg) in layout.segments.iter().enumerate() {
@@ -393,6 +478,7 @@ pub fn archive(src: &Path, dst: &Path, codec: &dyn Codec) -> Result<ArchiveRepor
     let json = serde_json::to_vec(&manifest)?;
     out.write_all(&json)?;
     out.write_all(&(json.len() as u32).to_le_bytes())?;
+    out.write_all(&Sha256::digest(&json)[..MANIFEST_DIGEST_LEN])?;
     out.flush()?;
     drop(out);
     let ph_encode = blad_mem::Phase {
@@ -435,25 +521,29 @@ pub fn archive(src: &Path, dst: &Path, codec: &dyn Codec) -> Result<ArchiveRepor
 pub fn read_manifest(path: &Path) -> Result<(Manifest, u64, u64)> {
     let mut f = std::fs::File::open(path)?;
     let total = f.metadata()?.len();
-    if total < MAGIC.len() as u64 + FOOTER_LEN {
+    if total < 9 + FOOTER_LEN {
         return Err(Error::NotAnArchive);
     }
 
-    let mut magic = [0u8; 5];
-    f.read_exact(&mut magic).map_err(|_| Error::NotAnArchive)?;
-    if magic[0..4] != MAGIC[0..4] {
+    let mut head = [0u8; 9];
+    f.read_exact(&mut head).map_err(|_| Error::NotAnArchive)?;
+    if head[0..4] != MAGIC[0..4] {
         return Err(Error::NotAnArchive);
     }
-    if magic[4] > MAGIC[4] {
-        return Err(Error::FutureVersion(magic[4]));
+    if head[4] > MAGIC[4] {
+        return Err(Error::FutureVersion(head[4]));
     }
+    let thumb_len = u64::from(u32::from_le_bytes([head[5], head[6], head[7], head[8]]));
+    let body_off = 9 + thumb_len;
 
     f.seek(SeekFrom::End(-(FOOTER_LEN as i64)))?;
-    let mut lenb = [0u8; 4];
-    f.read_exact(&mut lenb)?;
-    let json_len = u64::from(u32::from_le_bytes(lenb));
+    let mut footer = [0u8; FOOTER_LEN as usize];
+    f.read_exact(&mut footer)?;
+    let json_len = u64::from(u32::from_le_bytes([
+        footer[0], footer[1], footer[2], footer[3],
+    ]));
+    let want_digest = &footer[4..4 + MANIFEST_DIGEST_LEN];
 
-    let body_off = MAGIC.len() as u64;
     let json_off = total
         .checked_sub(FOOTER_LEN + json_len)
         .ok_or_else(|| Error::Corrupt("manifest length exceeds file size".into()))?;
@@ -465,6 +555,16 @@ pub fn read_manifest(path: &Path) -> Result<(Manifest, u64, u64)> {
     let mut json = vec![0u8; json_len as usize];
     f.read_exact(&mut json)
         .map_err(|_| Error::Corrupt("manifest truncated".into()))?;
+
+    // Check the manifest before parsing it. Serde would reject scrambled JSON anyway,
+    // but a flipped bit inside a *number* stays valid JSON and would silently give
+    // wrong offsets — the failure that looks like a codec bug and is not.
+    if &Sha256::digest(&json)[..MANIFEST_DIGEST_LEN] != want_digest {
+        return Err(Error::Corrupt(
+            "manifest failed its own checksum; the archive index is damaged".into(),
+        ));
+    }
+
     let manifest: Manifest = serde_json::from_slice(&json)?;
     manifest.layout.validate()?;
 
@@ -798,6 +898,82 @@ mod tests {
             s
         });
         assert!(!part.exists(), "temp file must be cleaned up");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rgb_source_gets_a_thumbnail() {
+        let dir = tmp();
+        let src = dir.join("a.tif");
+        let arc = dir.join("a.blad");
+        std::fs::write(&src, synth_tiff(512, 700, 3, 2, 23)).unwrap();
+        archive(&src, &arc, &Identity).unwrap();
+
+        let t = thumbnail(&arc).unwrap();
+        assert!(!t.is_empty(), "an RGB segment should yield a thumbnail");
+        assert_eq!(&t[0..2], &[0xFF, 0xD8], "JPEG SOI");
+        assert!(t.len() < 200_000, "thumbnail should be small, got {}", t.len());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A raw with no embedded preview has nothing to make a thumbnail from. That must
+    /// degrade to an empty thumbnail, never to a failed archive.
+    #[test]
+    fn cfa_only_source_archives_without_a_thumbnail() {
+        let dir = tmp();
+        let src = dir.join("a.3fr");
+        let arc = dir.join("a.blad");
+        let out = dir.join("a.out");
+        let bytes = synth_tiff(1024, 1024, 1, 32803, 29);
+        std::fs::write(&src, &bytes).unwrap();
+
+        archive(&src, &arc, &Identity).unwrap();
+        assert!(thumbnail(&arc).unwrap().is_empty());
+        restore(&arc, &out, &Identity).unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), bytes);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Reading the thumbnail must not require parsing the manifest — that is the whole
+    /// point of putting it at the head. Corrupt the footer and the preview still works.
+    #[test]
+    fn thumbnail_survives_a_damaged_manifest() {
+        let dir = tmp();
+        let src = dir.join("a.tif");
+        let arc = dir.join("a.blad");
+        std::fs::write(&src, synth_tiff(512, 700, 3, 2, 31)).unwrap();
+        archive(&src, &arc, &Identity).unwrap();
+
+        let mut data = std::fs::read(&arc).unwrap();
+        let n = data.len();
+        data[n - 40] ^= 0xFF; // inside the manifest JSON
+        std::fs::write(&arc, &data).unwrap();
+
+        assert!(read_manifest(&arc).is_err(), "manifest must be rejected");
+        assert!(!thumbnail(&arc).unwrap().is_empty(), "thumbnail still readable");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A flipped bit inside a manifest *number* stays valid JSON and would silently
+    /// yield wrong offsets. The digest is what catches it.
+    #[test]
+    fn manifest_digest_detects_corruption() {
+        let dir = tmp();
+        let src = dir.join("a.3fr");
+        let arc = dir.join("a.blad");
+        std::fs::write(&src, synth_tiff(1024, 1024, 1, 32803, 37)).unwrap();
+        archive(&src, &arc, &Identity).unwrap();
+
+        let mut data = std::fs::read(&arc).unwrap();
+        let n = data.len();
+        data[n - 30] ^= 0x01;
+        std::fs::write(&arc, &data).unwrap();
+
+        let e = read_manifest(&arc).unwrap_err();
+        assert!(
+            format!("{e}").contains("checksum"),
+            "expected a checksum failure, got: {e}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

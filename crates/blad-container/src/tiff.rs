@@ -16,6 +16,7 @@ const TAG_PHOTOMETRIC: u16 = 262;
 const TAG_STRIP_OFFSETS: u16 = 273;
 const TAG_SAMPLES_PER_PIXEL: u16 = 277;
 const TAG_STRIP_BYTE_COUNTS: u16 = 279;
+const TAG_ORIENTATION: u16 = 274;
 const TAG_SUB_IFDS: u16 = 330;
 
 const COMPRESSION_NONE: u16 = 1;
@@ -312,6 +313,12 @@ pub fn analyze<R: Read + Seek>(src: &mut R, file_len: u64) -> Result<Layout> {
     let ifd0 = u64::from(r.u32_at(4)?);
 
     let ifds = collect_ifds(&mut r, ifd0)?;
+    // Orientation lives in IFD0, which is the first entry collect_ifds returns.
+    let orientation = ifds
+        .first()
+        .and_then(|ifd| ifd.scalar(&mut r, TAG_ORIENTATION).ok().flatten())
+        .filter(|v| (1..=8).contains(v))
+        .unwrap_or(1) as u16;
     let mut regions = Vec::new();
     for ifd in &ifds {
         if let Some(region) = image_region(&mut r, ifd)? {
@@ -319,7 +326,7 @@ pub fn analyze<R: Read + Seek>(src: &mut R, file_len: u64) -> Result<Layout> {
         }
     }
 
-    tile("tiff", file_len, regions)
+    tile("tiff", file_len, orientation, regions)
 }
 
 #[cfg(test)]

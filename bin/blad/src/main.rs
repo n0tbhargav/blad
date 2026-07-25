@@ -67,6 +67,13 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Extract an archive's embedded preview as a JPEG.
+    Thumb {
+        archive: PathBuf,
+        /// Output path, or `-` for stdout (default: <archive>.jpg).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Show how blad decomposes a file into segments. Development aid.
     #[command(hide = true)]
     Layout { input: PathBuf },
@@ -84,6 +91,7 @@ fn main() -> Result<()> {
         } => cmd_archive(&inputs, output.as_deref(), effort, dry_run, stats, json),
         Command::Verify { archives, quick } => cmd_verify(&archives, quick),
         Command::Restore { archive, output } => cmd_restore(&archive, output.as_deref()),
+        Command::Thumb { archive, output } => cmd_thumb(&archive, output.as_deref()),
         Command::Layout { input } => {
             print_layout(&input, &blad_archive::plan(&input)?);
             Ok(())
@@ -222,6 +230,9 @@ fn print_layout(input: &Path, layout: &Layout) {
     println!("{}", input.display());
     println!("{t}");
     let pct = 100.0 * layout.payload_len() as f64 / layout.total_len.max(1) as f64;
+    if layout.orientation != 1 {
+        println!("  orientation {} (pixels are not stored upright)", layout.orientation);
+    }
     println!(
         "  {} total · {} compressible ({pct:.1}%) · {} verbatim",
         human(layout.total_len),
@@ -486,6 +497,35 @@ fn cmd_verify(archives: &[PathBuf], quick: bool) -> Result<()> {
     }
     if failures > 0 {
         bail!("{failures} of {} archive(s) failed", archives.len());
+    }
+    Ok(())
+}
+
+fn cmd_thumb(archive: &Path, output: Option<&Path>) -> Result<()> {
+    let jpeg = blad_archive::thumbnail(archive)
+        .with_context(|| format!("reading {}", archive.display()))?;
+    if jpeg.is_empty() {
+        bail!(
+            "{} has no embedded preview — the source had no RGB image to build one from",
+            archive.display()
+        );
+    }
+
+    match output {
+        // `-` writes the JPEG to stdout so it can be piped straight into a viewer.
+        Some(p) if p.as_os_str() == "-" => {
+            use std::io::Write;
+            std::io::stdout().write_all(&jpeg)?;
+        }
+        _ => {
+            let dst = output.map(PathBuf::from).unwrap_or_else(|| {
+                let mut p = archive.as_os_str().to_owned();
+                p.push(".jpg");
+                PathBuf::from(p)
+            });
+            std::fs::write(&dst, &jpeg)?;
+            println!("{}  ({})", dst.display(), human(jpeg.len() as u64));
+        }
     }
     Ok(())
 }
