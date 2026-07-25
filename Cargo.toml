@@ -10,17 +10,17 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/n0tbhargav/blad"
 
 [workspace.dependencies]
-blad-container = { path = "crates/blad-container", version = "0.1.0" }
-blad-cfa = { path = "crates/blad-cfa", version = "0.1.0" }
-blad-codec = { path = "crates/blad-codec", version = "0.1.0" }
-blad-archive = { path = "crates/blad-archive", version = "0.1.0" }
-blad-mem = { path = "crates/blad-mem", version = "0.1.0" }
+blad-container = { path = "crates/blad-container", version = "0.0.1" }
+blad-cfa = { path = "crates/blad-cfa", version = "0.0.1" }
+blad-codec = { path = "crates/blad-codec", version = "0.0.1" }
+blad-archive = { path = "crates/blad-archive", version = "0.0.1" }
+blad-mem = { path = "crates/blad-mem", version = "0.0.1" }
 
 anyhow = "1"
 thiserror = "2"
