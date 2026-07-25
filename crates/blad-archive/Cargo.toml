@@ -1,0 +1,16 @@
+[package]
+name = "blad-archive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Byte-exact archival container for image files"
+
+[dependencies]
+blad-container.workspace = true
+blad-cfa.workspace = true
+blad-codec.workspace = true
+blad-mem.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

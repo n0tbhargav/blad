@@ -1,0 +1,9 @@
+[package]
+name = "blad-mem"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Heap and RSS instrumentation for blad"
+
+[dependencies]
+libc.workspace = true

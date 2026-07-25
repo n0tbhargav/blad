@@ -1,0 +1,11 @@
+[package]
+name = "blad-codec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lossless image codec backends for blad"
+
+[dependencies]
+thiserror.workspace = true
+jpegxl-rs.workspace = true
+bytemuck.workspace = true

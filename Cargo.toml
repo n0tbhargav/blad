@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/blad-container",
+    "crates/blad-cfa",
+    "crates/blad-codec",
+    "crates/blad-archive",
+    "crates/blad-mem",
+    "bin/blad",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/n0tbhargav/blad"
+
+[workspace.dependencies]
+blad-container = { path = "crates/blad-container", version = "0.1.0" }
+blad-cfa = { path = "crates/blad-cfa", version = "0.1.0" }
+blad-codec = { path = "crates/blad-codec", version = "0.1.0" }
+blad-archive = { path = "crates/blad-archive", version = "0.1.0" }
+blad-mem = { path = "crates/blad-mem", version = "0.1.0" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+clap = { version = "4", features = ["derive"] }
+comfy-table = "7"
+libc = "0.2"
+bytemuck = "1"
+# default features pull in the `image` crate, which we do not want.
+jpegxl-rs = { version = "0.15", default-features = false, features = ["vendored"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
