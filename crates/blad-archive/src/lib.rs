@@ -26,18 +26,28 @@
 //! # Format
 //!
 //! ```text
-//! "BLAD" 0x03              magic + format version
-//! u32-le thumb_len
-//! thumbnail (JPEG)         at the head on purpose: a file browser reads a preview
-//!                          with one seek, knowing nothing about JPEG XL or the
-//!                          manifest format
+//! thumbnail (JPEG)         FIRST, so the file *is* a valid JPEG
+//! "BLAD" 0x04              magic + format version, after the thumbnail
 //! body                     segments in file order; verbatim bytes inline,
 //!                          image segments as their encoded parts
 //! manifest (JSON, UTF-8)   self-describing on purpose: archives should stay
 //!                          readable in twenty years without this source code
 //! u32-le manifest_len
+//! u32-le thumb_len         locates the body without decoding the JPEG
 //! 8 bytes                  SHA-256 prefix over the manifest
 //! ```
+//!
+//! # The thumbnail comes first on purpose
+//!
+//! JPEG decoders stop at the `FFD9` end marker and ignore trailing bytes, so putting a
+//! JPEG at offset 0 makes the whole archive a valid JPEG that happens to carry 56 MB
+//! after it. Declare the file type as conforming to `public.jpeg` and macOS renders
+//! previews with its own decoder — no Quick Look extension, no Swift, no code signing,
+//! nothing for us to maintain. Verified end to end with `qlmanage`.
+//!
+//! The cost is that `file` reports "JPEG image data" and Preview opens the thumbnail
+//! rather than erroring. For a preview-carrying archive that seems a reasonable thing
+//! to show.
 //!
 //! The manifest is a **footer** because blob sizes are only known after encoding.
 //! Putting it last lets the body stream straight to the output file instead of being
@@ -52,9 +62,9 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-pub const MAGIC: &[u8; 5] = b"BLAD\x03";
-/// `u32` manifest length + an 8-byte digest prefix over the manifest bytes.
-const FOOTER_LEN: u64 = 12;
+pub const MAGIC: &[u8; 5] = b"BLAD\x04";
+/// `u32` manifest length + `u32` thumbnail length + an 8-byte digest over the manifest.
+const FOOTER_LEN: u64 = 16;
 /// Bytes of SHA-256 kept to detect manifest corruption. Eight is ample: this guards
 /// against bit rot, not a forgery attempt.
 const MANIFEST_DIGEST_LEN: usize = 8;
@@ -357,25 +367,43 @@ fn make_thumbnail(src: &Path, layout: &Layout) -> Vec<u8> {
     .unwrap_or_default()
 }
 
-/// Read just the embedded thumbnail. One seek, no decoding, no manifest parsing.
+/// Read just the embedded thumbnail.
 ///
-/// This is what a file browser integration calls, so it must stay trivial: any tool that
-/// can read four bytes and a JPEG can show a preview of a blad archive.
+/// The bytes sit at offset 0 and form a complete JPEG, so anything that can decode a
+/// JPEG can show a preview of a blad archive without knowing this format exists. This
+/// helper exists for our own CLI; the operating system needs nothing from us.
 pub fn thumbnail(archive_path: &Path) -> Result<Vec<u8>> {
+    let (_, thumb_len) = read_footer(archive_path)?;
+    if thumb_len == 0 {
+        return Ok(Vec::new());
+    }
     let mut f = std::fs::File::open(archive_path)?;
-    let mut head = [0u8; 9];
-    f.read_exact(&mut head).map_err(|_| Error::NotAnArchive)?;
-    if head[0..4] != MAGIC[0..4] {
-        return Err(Error::NotAnArchive);
-    }
-    if head[4] > MAGIC[4] {
-        return Err(Error::FutureVersion(head[4]));
-    }
-    let len = u32::from_le_bytes([head[5], head[6], head[7], head[8]]) as usize;
-    let mut buf = vec![0u8; len];
+    let mut buf = vec![0u8; thumb_len as usize];
     f.read_exact(&mut buf)
         .map_err(|_| Error::Corrupt("thumbnail truncated".into()))?;
     Ok(buf)
+}
+
+/// Parse the trailing footer. Returns `(manifest_len, thumb_len)`.
+fn read_footer(path: &Path) -> Result<(u64, u64)> {
+    let mut f = std::fs::File::open(path)?;
+    let total = f.metadata()?.len();
+    if total < MAGIC.len() as u64 + FOOTER_LEN {
+        return Err(Error::NotAnArchive);
+    }
+    f.seek(SeekFrom::End(-(FOOTER_LEN as i64)))?;
+    let mut footer = [0u8; FOOTER_LEN as usize];
+    f.read_exact(&mut footer)?;
+    let manifest_len = u64::from(u32::from_le_bytes([
+        footer[0], footer[1], footer[2], footer[3],
+    ]));
+    let thumb_len = u64::from(u32::from_le_bytes([
+        footer[4], footer[5], footer[6], footer[7],
+    ]));
+    if thumb_len + MAGIC.len() as u64 + manifest_len + FOOTER_LEN > total {
+        return Err(Error::NotAnArchive);
+    }
+    Ok((manifest_len, thumb_len))
 }
 
 /// Result of a successful [`archive`].
@@ -426,12 +454,13 @@ pub fn archive(src: &Path, dst: &Path, codec: &dyn Codec) -> Result<ArchiveRepor
 
     // Written through `body.inner` rather than `body`, so the body checksum covers the
     // segments only and stays independent of the thumbnail.
+    //
+    // The JPEG goes first so the file is a valid JPEG; the magic follows it.
     let thumb = make_thumbnail(src, &layout);
     {
         let inner = &mut body.inner;
-        inner.write_all(MAGIC)?;
-        inner.write_all(&(thumb.len() as u32).to_le_bytes())?;
         inner.write_all(&thumb)?;
+        inner.write_all(MAGIC)?;
     }
 
     for (i, seg) in layout.segments.iter().enumerate() {
@@ -478,6 +507,7 @@ pub fn archive(src: &Path, dst: &Path, codec: &dyn Codec) -> Result<ArchiveRepor
     let json = serde_json::to_vec(&manifest)?;
     out.write_all(&json)?;
     out.write_all(&(json.len() as u32).to_le_bytes())?;
+    out.write_all(&(thumb.len() as u32).to_le_bytes())?;
     out.write_all(&Sha256::digest(&json)[..MANIFEST_DIGEST_LEN])?;
     out.flush()?;
     drop(out);
@@ -519,30 +549,22 @@ pub fn archive(src: &Path, dst: &Path, codec: &dyn Codec) -> Result<ArchiveRepor
 /// Read an archive's footer manifest without touching pixel data.
 /// Returns the manifest and the body's `(offset, length)`.
 pub fn read_manifest(path: &Path) -> Result<(Manifest, u64, u64)> {
+    let (json_len, thumb_len) = read_footer(path)?;
     let mut f = std::fs::File::open(path)?;
     let total = f.metadata()?.len();
-    if total < 9 + FOOTER_LEN {
+
+    // The magic follows the thumbnail rather than opening the file, so that offset 0 can
+    // hold a JPEG the operating system understands.
+    f.seek(SeekFrom::Start(thumb_len))?;
+    let mut magic = [0u8; 5];
+    f.read_exact(&mut magic).map_err(|_| Error::NotAnArchive)?;
+    if magic[0..4] != MAGIC[0..4] {
         return Err(Error::NotAnArchive);
     }
-
-    let mut head = [0u8; 9];
-    f.read_exact(&mut head).map_err(|_| Error::NotAnArchive)?;
-    if head[0..4] != MAGIC[0..4] {
-        return Err(Error::NotAnArchive);
+    if magic[4] > MAGIC[4] {
+        return Err(Error::FutureVersion(magic[4]));
     }
-    if head[4] > MAGIC[4] {
-        return Err(Error::FutureVersion(head[4]));
-    }
-    let thumb_len = u64::from(u32::from_le_bytes([head[5], head[6], head[7], head[8]]));
-    let body_off = 9 + thumb_len;
-
-    f.seek(SeekFrom::End(-(FOOTER_LEN as i64)))?;
-    let mut footer = [0u8; FOOTER_LEN as usize];
-    f.read_exact(&mut footer)?;
-    let json_len = u64::from(u32::from_le_bytes([
-        footer[0], footer[1], footer[2], footer[3],
-    ]));
-    let want_digest = &footer[4..4 + MANIFEST_DIGEST_LEN];
+    let body_off = thumb_len + MAGIC.len() as u64;
 
     let json_off = total
         .checked_sub(FOOTER_LEN + json_len)
@@ -559,7 +581,10 @@ pub fn read_manifest(path: &Path) -> Result<(Manifest, u64, u64)> {
     // Check the manifest before parsing it. Serde would reject scrambled JSON anyway,
     // but a flipped bit inside a *number* stays valid JSON and would silently give
     // wrong offsets — the failure that looks like a codec bug and is not.
-    if &Sha256::digest(&json)[..MANIFEST_DIGEST_LEN] != want_digest {
+    f.seek(SeekFrom::End(-(FOOTER_LEN as i64) + 8))?;
+    let mut want = [0u8; MANIFEST_DIGEST_LEN];
+    f.read_exact(&mut want)?;
+    if Sha256::digest(&json)[..MANIFEST_DIGEST_LEN] != want {
         return Err(Error::Corrupt(
             "manifest failed its own checksum; the archive index is damaged".into(),
         ));
@@ -913,6 +938,31 @@ mod tests {
         assert!(!t.is_empty(), "an RGB segment should yield a thumbnail");
         assert_eq!(&t[0..2], &[0xFF, 0xD8], "JPEG SOI");
         assert!(t.len() < 200_000, "thumbnail should be small, got {}", t.len());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The property the macOS integration depends on: an archive with a thumbnail is
+    /// itself a valid JPEG, so the operating system can render a preview using its own
+    /// decoder. Break this and Finder silently stops showing previews.
+    #[test]
+    fn an_archive_with_a_thumbnail_is_a_valid_jpeg() {
+        let dir = tmp();
+        let src = dir.join("a.tif");
+        let arc = dir.join("a.blad");
+        std::fs::write(&src, synth_tiff(512, 700, 3, 2, 41)).unwrap();
+        archive(&src, &arc, &Identity).unwrap();
+
+        let data = std::fs::read(&arc).unwrap();
+        assert_eq!(&data[0..2], &[0xFF, 0xD8], "file must open with a JPEG SOI marker");
+
+        // The JPEG must terminate before our magic, or a decoder would run into it.
+        let thumb = thumbnail(&arc).unwrap();
+        assert_eq!(&thumb[thumb.len() - 2..], &[0xFF, 0xD9], "JPEG EOI");
+        assert_eq!(
+            &data[thumb.len()..thumb.len() + 5],
+            MAGIC,
+            "magic must follow the thumbnail"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

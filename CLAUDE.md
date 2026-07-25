@@ -377,10 +377,25 @@ metadata fidelity, GPU backend proven to match the CPU path within a stated tole
    - **Orientation is applied.** The X1D writes tag 274 = 8 and stores its preview
      landscape; without this every portrait photo shows up sideways in Finder. Caught by
      looking at the output image, not by a passing test.
-4. **OS thumbnail integration.** Needs platform shell code, not just a CLI:
-   macOS = Quick Look app extension (`QLThumbnailProvider`) in a signed `.app`;
-   Windows = `IThumbnailProvider` COM shell extension DLL; Linux = a `.thumbnailer`
-   file. All of them call blad, so (2) and (3) are prerequisites.
+4. ~~OS thumbnail integration.~~ **Done for macOS, and far cheaper than planned.**
+
+   The original plan — a Quick Look extension in Swift, inside a signed `.app` — was
+   unnecessary. **Format v4 puts the JPEG at offset 0**, so an archive *is* a valid JPEG
+   (decoders stop at `FFD9` and ignore trailing bytes). Declaring the file type as
+   conforming to `public.jpeg` then makes Finder, Quick Look, Spotlight and Preview
+   render previews with Apple's decoder. No plugin, no Swift, no code signing, nothing
+   for us to maintain.
+
+   `scripts/install-macos.sh` writes a bundle containing a plist and a stub — the bundle
+   exists only because UTI declarations must live in one — then registers it and
+   *verifies* against a real archive rather than assuming success. Confirmed with
+   `qlmanage`: type recognised, preview rendered.
+
+   Cost: `file` reports "JPEG image data", and Preview opens the thumbnail instead of
+   erroring. For a preview-carrying archive that seems reasonable.
+
+   Windows (`IThumbnailProvider`) and Linux (`.thumbnailer`) remain, though Linux file
+   managers that sniff content may already work.
 5. **`blad exif`** — read standard TIFF/Exif/GPS IFDs. The IFD walker already exists;
    what is missing is a tag dictionary and type-aware formatting. Explicitly excluded
    from v1: maker notes (pass through opaquely) and *writing* metadata.
