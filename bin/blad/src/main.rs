@@ -8,7 +8,8 @@ use anyhow::{bail, Context, Result};
 use blad_codec::Jxl;
 use blad_container::{Layout, SegmentKind};
 use clap::{Parser, Subcommand};
-use comfy_table::{presets, Attribute, Cell, CellAlignment, ContentArrangement, Table, TableComponent};
+use comfy_table::{presets, Attribute, Cell, CellAlignment, Color, ContentArrangement, Table, TableComponent};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 /// Installed so heap usage can be attributed per phase. Counters are relaxed atomics;
@@ -105,6 +106,44 @@ fn human(bytes: u64) -> String {
     }
 }
 
+/// Colour only when a human is looking at it: a terminal, and NO_COLOR unset.
+/// Piping into a file or `jq` must produce clean text.
+fn colour() -> bool {
+    std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
+}
+
+/// A proportion bar. Filled means "saved" or "share of time" — more filled is more,
+/// which is the only reading that needs no legend.
+///
+/// Eighth-blocks give sub-character resolution, so a 12-wide bar distinguishes ~1%
+/// differences instead of rounding to 8% steps.
+fn bar(fraction: f64, width: usize) -> String {
+    const PARTIAL: [char; 8] = ['\u{258f}', '\u{258e}', '\u{258d}', '\u{258c}',
+                                '\u{258b}', '\u{258a}', '\u{2589}', '\u{2588}'];
+    let eighths = (fraction.clamp(0.0, 1.0) * width as f64 * 8.0).round() as usize;
+    let full = eighths / 8;
+    let rem = eighths % 8;
+    let mut out = String::new();
+    for _ in 0..full.min(width) {
+        out.push('\u{2588}');
+    }
+    if rem > 0 && full < width {
+        out.push(PARTIAL[rem - 1]);
+    }
+    while out.chars().count() < width {
+        out.push('\u{00b7}');
+    }
+    out
+}
+
+fn green(c: Cell) -> Cell {
+    if colour() { c.fg(Color::Green) } else { c }
+}
+
+fn dim(c: Cell) -> Cell {
+    if colour() { c.add_attribute(Attribute::Dim) } else { c }
+}
+
 /// Borderless, with a single rule under the header.
 ///
 /// A line between every row turns a five-row table into visual noise; the header rule
@@ -114,6 +153,9 @@ fn table() -> Table {
     t.load_preset(presets::NOTHING)
         .set_style(TableComponent::HeaderLines, '─')
         .set_content_arrangement(ContentArrangement::Dynamic);
+    if !colour() {
+        t.force_no_tty();
+    }
     t
 }
 
@@ -121,10 +163,15 @@ fn right(s: impl ToString) -> Cell {
     Cell::new(s).set_alignment(CellAlignment::Right)
 }
 
+/// Throughput, or an em dash when the interval is too short to divide by.
+///
+/// Dividing 105 MB by a sub-millisecond parse produced "173.5 GB/s", which is an
+/// artifact of the clock rather than a measurement. Refusing to print it is more honest
+/// than printing a number nobody should believe.
 fn throughput(bytes: u64, d: std::time::Duration) -> String {
     let s = d.as_secs_f64();
-    if s <= 0.0 {
-        return "-".into();
+    if s < 0.005 {
+        return "—".into();
     }
     format!("{}/s", human((bytes as f64 / s) as u64))
 }
@@ -194,11 +241,14 @@ fn print_stats(input: &Path, r: &blad_archive::ArchiveReport) {
         format!("{:.0}%", 100.0 * d.as_secs_f64() / t.total.as_secs_f64().max(1e-9))
     };
 
+    let share = |d: std::time::Duration| d.as_secs_f64() / t.total.as_secs_f64().max(1e-9);
+
     let mut tb = table();
     tb.set_header(vec![
         Cell::new("phase").add_attribute(Attribute::Bold),
         Cell::new("time").add_attribute(Attribute::Bold),
         Cell::new("share").add_attribute(Attribute::Bold),
+        Cell::new("").add_attribute(Attribute::Bold),
         Cell::new("throughput").add_attribute(Attribute::Bold),
         Cell::new("heap peak").add_attribute(Attribute::Bold),
         Cell::new("RSS after").add_attribute(Attribute::Bold),
@@ -212,6 +262,7 @@ fn print_stats(input: &Path, r: &blad_archive::ArchiveReport) {
             Cell::new(name),
             right(ms(p.time)),
             right(pct(p.time)),
+            dim(Cell::new(bar(share(p.time), 10))),
             right(throughput(r.original_len, p.time)),
             right(human(p.heap_peak)),
             right(human(p.rss_after)),
@@ -220,31 +271,30 @@ fn print_stats(input: &Path, r: &blad_archive::ArchiveReport) {
     tb.add_row(vec![
         Cell::new("total").add_attribute(Attribute::Bold),
         right(ms(t.total)).add_attribute(Attribute::Bold),
-        right(""),
+        Cell::new(""),
+        Cell::new(""),
         right(throughput(r.original_len, t.total)),
-        right(""),
+        Cell::new(""),
         right(human(blad_mem::rss_highwater())).add_attribute(Attribute::Bold),
     ]);
+
+    // The heap counter sees our allocations; RSS sees everything else too — mapped
+    // libraries, allocator overhead, and libjxl's own working set. The gap is the part
+    // that is not our data structures.
+    let peak_heap = t.encode.heap_peak.max(t.verify.heap_peak);
+    let rss = blad_mem::rss_highwater();
 
     println!("{}", input.display());
     println!("{tb}");
     println!(
-        "  payload {} · skeleton {}",
+        "  payload {} · skeleton {} · heap {} · RSS {} ({:.0}% non-heap)",
         human(r.payload_len),
         human(r.skeleton_len),
-    );
-    // The heap counter sees our allocations; RSS sees everything. The gap is temp-file
-    // pages, mapped libraries, and allocator overhead — currently dominated by the
-    // shell-out codec's netpbm round trip.
-    let peak_heap = t.encode.heap_peak.max(t.verify.heap_peak);
-    let rss = blad_mem::rss_highwater();
-    println!(
-        "  heap {} · RSS {} · non-heap {} ({:.0}% of RSS)",
         human(peak_heap),
         human(rss),
-        human(rss.saturating_sub(peak_heap)),
         100.0 * rss.saturating_sub(peak_heap) as f64 / rss.max(1) as f64,
     );
+    println!();
 }
 
 fn json_line(input: &Path, r: &blad_archive::ArchiveReport, effort: u8) -> String {
@@ -296,12 +346,14 @@ fn cmd_archive(
 
     let c = codec(effort);
     let mut t = table();
+    // "ratio 0.5303" and "saved 47.0%" are the same fact twice. Keep the one people
+    // actually want, and give it a bar so a column of files is scannable at a glance.
     t.set_header(vec![
         Cell::new("file").add_attribute(Attribute::Bold),
         Cell::new("original").add_attribute(Attribute::Bold),
         Cell::new("stored").add_attribute(Attribute::Bold),
-        Cell::new("ratio").add_attribute(Attribute::Bold),
         Cell::new("saved").add_attribute(Attribute::Bold),
+        Cell::new("").add_attribute(Attribute::Bold),
     ]);
 
     let (mut total_in, mut total_out, mut failures) = (0u64, 0u64, 0usize);
@@ -314,12 +366,13 @@ fn cmd_archive(
                 if json {
                     println!("{}", json_line(input, &r, effort));
                 } else {
+                    let saved = 1.0 - r.ratio();
                     t.add_row(vec![
-                        Cell::new(dst.file_name().unwrap_or_default().to_string_lossy()),
-                        right(human(r.original_len)),
+                        Cell::new(input.file_name().unwrap_or_default().to_string_lossy()),
+                        dim(right(human(r.original_len))),
                         right(human(r.stored_len)),
-                        right(format!("{:.4}", r.ratio())),
-                        right(format!("{:.1}%", (1.0 - r.ratio()) * 100.0)),
+                        green(right(format!("{:.1}%", saved * 100.0))),
+                        green(Cell::new(bar(saved, 12))),
                     ]);
                     if stats {
                         print_stats(input, &r);
@@ -334,13 +387,23 @@ fn cmd_archive(
     }
 
     if total_in > 0 && !json {
-        println!("{t}");
         let ratio = total_out as f64 / total_in as f64;
+        // A total row only says something new when there is more than one file.
+        if inputs.len() > 1 {
+            let saved = 1.0 - ratio;
+            t.add_row(vec![
+                Cell::new("total").add_attribute(Attribute::Bold),
+                dim(right(human(total_in))),
+                right(human(total_out)).add_attribute(Attribute::Bold),
+                green(right(format!("{:.1}%", saved * 100.0))).add_attribute(Attribute::Bold),
+                green(Cell::new(bar(saved, 12))),
+            ]);
+        }
+        println!("{t}");
+        let n = inputs.len() - failures;
         println!(
-            "  {} → {}   x = {ratio:.4}   ({:.1}% saved)   byte-exact reconstruction verified",
-            human(total_in),
-            human(total_out),
-            (1.0 - ratio) * 100.0
+            "  ratio {ratio:.4} · byte-exact reconstruction verified for {n} file{}",
+            if n == 1 { "" } else { "s" }
         );
         if stats && inputs.len() > 1 {
             println!("  note: peak RSS is a process-wide high-water mark; for per-file");
@@ -355,43 +418,86 @@ fn cmd_archive(
 
 fn cmd_verify(archives: &[PathBuf], quick: bool) -> Result<()> {
     let c = if quick { None } else { Some(codec(4)) };
-    let mut t = table();
-    t.set_header(vec![
-        Cell::new("archive").add_attribute(Attribute::Bold),
-        Cell::new("original").add_attribute(Attribute::Bold),
-        Cell::new("size").add_attribute(Attribute::Bold),
-        Cell::new("result").add_attribute(Attribute::Bold),
-    ]);
 
+    // Collect first, render second: the "holds" column is empty whenever the archive is
+    // just <original>.blad, which is the default. A header with nothing under it is
+    // worse than no column, so it is only emitted when some row needs it.
+    struct Row {
+        archive: String,
+        holds: String,
+        size: String,
+        ok: bool,
+        verdict: String,
+    }
+    let mut rows = Vec::with_capacity(archives.len());
     let mut failures = 0usize;
+
     for a in archives {
+        let archive = a.file_name().unwrap_or_default().to_string_lossy().into_owned();
         let outcome = match &c {
             Some(codec) => blad_archive::verify(a, codec),
             None => blad_archive::verify_quick(a),
         };
         match outcome {
-            Ok(m) => t.add_row(vec![
-                Cell::new(a.file_name().unwrap_or_default().to_string_lossy()),
-                Cell::new(&m.original.name),
-                right(human(m.original.len)),
-                Cell::new(if quick { "ok (quick)" } else { "ok (full)" }),
-            ]),
+            Ok(m) => {
+                let derived = format!("{}.blad", m.original.name);
+                rows.push(Row {
+                    holds: if derived == archive {
+                        String::new()
+                    } else {
+                        m.original.name.clone()
+                    },
+                    archive,
+                    size: human(m.original.len),
+                    ok: true,
+                    verdict: if quick { "ok (quick)" } else { "ok (full)" }.into(),
+                });
+            }
             Err(e) => {
                 failures += 1;
-                t.add_row(vec![
-                    Cell::new(a.file_name().unwrap_or_default().to_string_lossy()),
-                    Cell::new("-"),
-                    right("-"),
-                    Cell::new("FAILED"),
-                ]);
                 eprintln!("error: {}: {e}", a.display());
-                &mut t
+                rows.push(Row {
+                    archive,
+                    holds: String::new(),
+                    size: "\u{2014}".into(),
+                    ok: false,
+                    verdict: "FAILED".into(),
+                });
             }
-        };
+        }
+    }
+
+    let show_holds = rows.iter().any(|r| !r.holds.is_empty());
+    let mut t = table();
+    let mut header = vec![Cell::new("archive").add_attribute(Attribute::Bold)];
+    if show_holds {
+        header.push(Cell::new("holds").add_attribute(Attribute::Bold));
+    }
+    header.push(Cell::new("size").add_attribute(Attribute::Bold));
+    header.push(Cell::new("result").add_attribute(Attribute::Bold));
+    t.set_header(header);
+
+    for r in &rows {
+        let mut cells = vec![Cell::new(&r.archive)];
+        if show_holds {
+            cells.push(dim(Cell::new(&r.holds)));
+        }
+        cells.push(right(&r.size));
+        cells.push(if r.ok {
+            green(Cell::new(&r.verdict))
+        } else {
+            let c = Cell::new(&r.verdict).add_attribute(Attribute::Bold);
+            if colour() {
+                c.fg(Color::Red)
+            } else {
+                c
+            }
+        });
+        t.add_row(cells);
     }
     println!("{t}");
-    if quick {
-        println!("  quick mode checks stored bytes only; run without --quick to prove decode");
+    if quick && failures == 0 {
+        println!("  stored bytes checked; run without --quick to prove the decode path");
     }
     if failures > 0 {
         bail!("{failures} of {} archive(s) failed", archives.len());
