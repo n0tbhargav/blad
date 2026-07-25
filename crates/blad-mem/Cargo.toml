@@ -3,6 +3,7 @@ name = "blad-mem"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Heap and RSS instrumentation for blad"
 
 [dependencies]

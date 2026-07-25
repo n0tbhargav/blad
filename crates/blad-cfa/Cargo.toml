@@ -3,6 +3,7 @@ name = "blad-cfa"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Colour filter array (Bayer) plane decorrelation"
 
 [dependencies]
