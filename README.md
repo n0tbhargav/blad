@@ -24,9 +24,9 @@ lossless", not "same pixels, new container" — the same SHA-256.
 
 > [!WARNING]
 > **Pre-release. Don't use blad as your only copy of anything.**
-> The archive format is not frozen — it has changed four times — and blad refuses to
-> read archives written by a different format version. There is no error-correcting
-> parity unless you ask for `--parity`. See [Stability](#stability).
+> The archive format is **v1 and not frozen**, and blad refuses to read archives written
+> by a different format version. Parity is opt-in, not automatic. See
+> [Stability](#stability).
 
 ## Install
 
@@ -129,7 +129,7 @@ An archival format that can't prove itself isn't archival.
   it back with `blad exif <archive>`:
 
   ```
-  ⚇  Archived  blad 0.0.2 ∙ format v5 ∙ libjxl 0.12.0 effort 7 ∙ parity 6.2% ∙ 2026-07-26T16:09:21Z
+  ⚇  Archived  blad 0.0.2 ∙ format v1 ∙ libjxl 0.12.0 effort 7 ∙ parity 6.2% ∙ 2026-07-26T16:09:21Z
   ```
 
   Restoring never *needs* this — the format version in the magic decides readability, and
@@ -344,14 +344,18 @@ No encoder can do anything about that.
 | | status |
 |---|---|
 | byte-exactness | verified on every archive, before it is written |
-| archive format | **not frozen** — v4, changed four times |
+| archive format | **v1, not frozen** |
 | CLI surface | expect changes |
 | cross-version reads | refused, with the version numbers in the message |
 
 blad refuses archives written by any other format version rather than guessing at their
 layout, because a misparsed archive looks like corruption instead of like the version
-mismatch it is. In practice: **keep the binary that wrote an archive, or keep the
-original file, until 0.1.0.**
+mismatch it is.
+
+The format version is **not** the binary version — they change at different rates, and a
+release that fixes a CLI table does not make a new format. Which binary wrote an archive
+is recorded separately, in its provenance, so `blad exif` tells you what to reach for if
+you ever need the exact build. In practice: **keep the original file until 0.1.0.**
 
 At 0.1.0 the format gets a written compatibility guarantee and blad gains the ability to
 read older versions. Until then, treat archives as reproducible outputs rather than as

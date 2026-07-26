@@ -27,7 +27,7 @@
 //!
 //! ```text
 //! thumbnail (JPEG)         FIRST, so the file *is* a valid JPEG
-//! "BLAD" 0x05              magic + format version, after the thumbnail
+//! "BLAD" 0x01              magic + format version, after the thumbnail
 //! body                     segments in file order; verbatim bytes inline,
 //!                          image segments as their encoded parts
 //! manifest × 3             JSON, UTF-8, each followed by its own digest
@@ -75,7 +75,7 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-pub const MAGIC: &[u8; 5] = b"BLAD\x05";
+pub const MAGIC: &[u8; 5] = b"BLAD\x01";
 /// `u32` manifest_len, `u32` thumb_len, `u64` parity_off, `u32` parity_len,
 /// `u16` manifest_copies, `u16` reserved, 8-byte manifest digest.
 const FOOTER_LEN: u64 = 32;
@@ -106,7 +106,7 @@ pub enum Error {
     NotAnArchive,
     #[error("archive format version {0} is newer than this build understands (this build writes and reads v{1})")]
     FutureVersion(u8, u8),
-    #[error("archive format version {0} predates this build (this build writes and reads v{1}); the format is not yet stable, so old archives must be restored with the version that wrote them")]
+    #[error("archive format version {0} predates this build (this build writes and reads v{1}); the format is not yet stable, so restore it with the blad version recorded in its manifest")]
     PastVersion(u8, u8),
     #[error("archive is truncated or corrupt: {0}")]
     Corrupt(String),
@@ -832,10 +832,15 @@ pub fn read_manifest(path: &Path) -> Result<(Manifest, u64, u64)> {
     if magic[0..4] != MAGIC[0..4] {
         return Err(Error::NotAnArchive);
     }
-    // Exact match, not "<= current". The format is pre-1.0 and has changed four times;
-    // silently accepting an older version would parse it with the wrong offsets, which
-    // looks like corruption rather than like the version mismatch it is. Refusing with
-    // the actual numbers is the only answer that tells the user what to do next.
+    // Exact match, not "<= current". Silently accepting a different version would parse
+    // it at the wrong offsets and surface as corruption rather than as the version
+    // mismatch it is — sending someone after a codec bug that does not exist. Refusing
+    // with both numbers is the only answer that says what to do next.
+    //
+    // This byte is the format's version, deliberately *not* the binary's. They change at
+    // different rates: a blad release that fixes a CLI table does not make a new format,
+    // and two builds a year apart read the same archive. Which binary wrote it is
+    // recorded separately, in `provenance`.
     match magic[4].cmp(&MAGIC[4]) {
         std::cmp::Ordering::Greater => return Err(Error::FutureVersion(magic[4], MAGIC[4])),
         std::cmp::Ordering::Less => return Err(Error::PastVersion(magic[4], MAGIC[4])),

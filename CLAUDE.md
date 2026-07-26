@@ -253,7 +253,7 @@ without measuring on both CFA and RGB.**
    an LZW TIFF archives at 1.000 — measured. Modelling an existing compressed bitstream
    byte-exactly is the Lepton-class problem, solved so far only for JPEG (by libjxl).
    blad trades that depth for breadth.
-3. ~~**No parity/error correction.**~~ **Done — format v5.** See the note below.
+3. ~~**No parity/error correction.**~~ **Done — opt-in `--parity`.** See below.
 4. ~~**The manifest itself is not checksummed, and exists in one copy.**~~ **Done.**
    Original text follows for the record. Both hashes
    (`original.sha256`, `body_sha256`) live in the JSON footer, so a single flipped bit
@@ -641,9 +641,20 @@ gate, so for a few hours `cargo install blad` served older code than the release
 downloadable and its number is still spent forever — so the only remedy is to bump and
 publish both channels together. Do that every time.
 
-### Durability: format v5 (2026-07-25)
+### Durability: the current format, v1 (2026-07-25)
 
-Measured first. Flipping single bits in a v4 archive showed detection was complete and
+**Renumbered to v1 on 2026-07-26.** The magic byte had reached 0x05 by counting
+development iterations, which is history nobody outside this repo needs: no archive
+written by an earlier layout exists anywhere. The published format starts at 1.
+
+**The format version is deliberately not the binary version.** They change at different
+rates — a release that fixes a CLI table does not make a new format, and two builds a
+year apart must read the same archive. Deriving one from the other would make every
+patch release look like a format break. Which binary wrote an archive is recorded
+separately in `provenance`, so both questions have an answer and neither is guessed from
+the other.
+
+Measured first. Flipping single bits showed detection was complete and
 correction absent: a damaged body failed `verify --quick` and `restore` refused to write
 output; a damaged manifest or footer reported "archive index is damaged"; a damaged
 thumbnail went unnoticed but cost nothing, since the preview is not part of
