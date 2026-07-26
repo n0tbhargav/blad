@@ -56,7 +56,7 @@
 //! unreadable, with no way to tell that the payload was fine.
 
 use blad_cfa::Planes;
-use blad_codec::{Channels, Codec, Depth};
+use blad_codec::{Channels, Codec, Depth, Frame};
 use blad_container::{ImageSpec, Layout, PixelLayout, SegmentKind};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -210,8 +210,16 @@ fn encode_segment(
     let depth = depth_of(spec)?;
     let le = spec.little_endian;
 
+    let frame = |w: u32, h: u32, channels: Channels| Frame {
+        width: w,
+        height: h,
+        channels,
+        depth,
+        little_endian: le,
+    };
+
     let whole = |ch: Channels, enc: Encoding, b: &[u8], out: &mut dyn Write| -> Result<_> {
-        let n = codec.encode(b, spec.width, spec.height, ch, depth, le, out)?;
+        let n = codec.encode(b, frame(spec.width, spec.height, ch), out)?;
         Ok((enc, vec![n]))
     };
 
@@ -219,7 +227,9 @@ fn encode_segment(
         // CFA splitting is defined on 16-bit samples; 8-bit mosaics fall through to
         // whole encoding, which is correct, merely larger.
         PixelLayout::Cfa
-            if spec.bits_per_sample == 16 && spec.width % 2 == 0 && spec.height % 2 == 0 =>
+            if spec.bits_per_sample == 16
+                && spec.width.is_multiple_of(2)
+                && spec.height.is_multiple_of(2) =>
         {
             let planes = blad_cfa::split(&bytes, spec.width, spec.height, 2)?;
             // The mosaic is redundant once split; release it before encoding.
@@ -228,11 +238,7 @@ fn encode_segment(
             for p in &planes.planes {
                 parts.push(codec.encode(
                     p,
-                    planes.width,
-                    planes.height,
-                    Channels::Gray,
-                    depth,
-                    le,
+                    frame(planes.width, planes.height, Channels::Gray),
                     out,
                 )?);
             }
@@ -255,6 +261,13 @@ fn decode_segment(
 ) -> Result<u64> {
     let depth = depth_of(spec)?;
     let le = spec.little_endian;
+    let frame = |w: u32, h: u32, channels: Channels| Frame {
+        width: w,
+        height: h,
+        channels,
+        depth,
+        little_endian: le,
+    };
     match encoding {
         Encoding::Cfa4 => {
             if parts.len() != blad_cfa::PLANE_COUNT {
@@ -268,7 +281,7 @@ fn decode_segment(
             let mut planes: [Vec<u8>; blad_cfa::PLANE_COUNT] = Default::default();
             for (i, part) in parts.iter().enumerate() {
                 let mut buf = Vec::with_capacity((hw as usize) * (hh as usize) * 2);
-                codec.decode(part, hw, hh, Channels::Gray, depth, le, &mut buf)?;
+                codec.decode(part, frame(hw, hh, Channels::Gray), &mut buf)?;
                 planes[i] = buf;
             }
             let mosaic = blad_cfa::merge(&Planes {
@@ -282,20 +295,12 @@ fn decode_segment(
         }
         Encoding::Gray => Ok(codec.decode(
             &parts[0],
-            spec.width,
-            spec.height,
-            Channels::Gray,
-            depth,
-            le,
+            frame(spec.width, spec.height, Channels::Gray),
             out,
         )?),
         Encoding::Rgb => Ok(codec.decode(
             &parts[0],
-            spec.width,
-            spec.height,
-            Channels::Rgb,
-            depth,
-            le,
+            frame(spec.width, spec.height, Channels::Rgb),
             out,
         )?),
     }
@@ -329,9 +334,7 @@ pub struct Timings {
 fn thumb_source(layout: &Layout) -> Option<(&blad_container::Segment, &ImageSpec)> {
     layout
         .image_segments()
-        .filter(|(_, _, spec)| {
-            spec.layout == PixelLayout::Chunky && spec.samples_per_pixel == 3
-        })
+        .filter(|(_, _, spec)| spec.layout == PixelLayout::Chunky && spec.samples_per_pixel == 3)
         .min_by_key(|(_, seg, _)| seg.len)
         .map(|(_, seg, spec)| (seg, spec))
 }
@@ -519,8 +522,7 @@ pub fn archive(src: &Path, dst: &Path, codec: &dyn Codec) -> Result<ArchiveRepor
 
     // Verify from what is actually on disk, not from memory — this must catch a bad
     // write, not merely a bad encode.
-    let (checked, ph_verify) =
-        blad_mem::measure(|| reconstruct(dst, codec, std::io::sink()));
+    let (checked, ph_verify) = blad_mem::measure(|| reconstruct(dst, codec, std::io::sink()));
     let (len, actual) = checked?;
     if len != manifest.original.len || actual != digest {
         let _ = std::fs::remove_file(dst);
@@ -730,29 +732,11 @@ mod tests {
         fn id(&self) -> &'static str {
             "identity"
         }
-        fn encode(
-            &self,
-            src: &[u8],
-            _w: u32,
-            _h: u32,
-            _c: Channels,
-            _d: Depth,
-            _le: bool,
-            out: &mut dyn Write,
-        ) -> blad_codec::Result<u64> {
+        fn encode(&self, src: &[u8], _f: Frame, out: &mut dyn Write) -> blad_codec::Result<u64> {
             out.write_all(src)?;
             Ok(src.len() as u64)
         }
-        fn decode(
-            &self,
-            data: &[u8],
-            _w: u32,
-            _h: u32,
-            _c: Channels,
-            _d: Depth,
-            _le: bool,
-            out: &mut dyn Write,
-        ) -> blad_codec::Result<u64> {
+        fn decode(&self, data: &[u8], _f: Frame, out: &mut dyn Write) -> blad_codec::Result<u64> {
             out.write_all(data)?;
             Ok(data.len() as u64)
         }
@@ -937,7 +921,11 @@ mod tests {
         let t = thumbnail(&arc).unwrap();
         assert!(!t.is_empty(), "an RGB segment should yield a thumbnail");
         assert_eq!(&t[0..2], &[0xFF, 0xD8], "JPEG SOI");
-        assert!(t.len() < 200_000, "thumbnail should be small, got {}", t.len());
+        assert!(
+            t.len() < 200_000,
+            "thumbnail should be small, got {}",
+            t.len()
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -953,7 +941,11 @@ mod tests {
         archive(&src, &arc, &Identity).unwrap();
 
         let data = std::fs::read(&arc).unwrap();
-        assert_eq!(&data[0..2], &[0xFF, 0xD8], "file must open with a JPEG SOI marker");
+        assert_eq!(
+            &data[0..2],
+            &[0xFF, 0xD8],
+            "file must open with a JPEG SOI marker"
+        );
 
         // The JPEG must terminate before our magic, or a decoder would run into it.
         let thumb = thumbnail(&arc).unwrap();
@@ -1000,7 +992,10 @@ mod tests {
         std::fs::write(&arc, &data).unwrap();
 
         assert!(read_manifest(&arc).is_err(), "manifest must be rejected");
-        assert!(!thumbnail(&arc).unwrap().is_empty(), "thumbnail still readable");
+        assert!(
+            !thumbnail(&arc).unwrap().is_empty(),
+            "thumbnail still readable"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

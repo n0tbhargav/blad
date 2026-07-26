@@ -146,10 +146,13 @@ impl Layout {
     }
 
     pub fn image_segments(&self) -> impl Iterator<Item = (usize, &Segment, &ImageSpec)> {
-        self.segments.iter().enumerate().filter_map(|(i, s)| match &s.kind {
-            SegmentKind::Image(spec) => Some((i, s, spec)),
-            SegmentKind::Verbatim => None,
-        })
+        self.segments
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| match &s.kind {
+                SegmentKind::Image(spec) => Some((i, s, spec)),
+                SegmentKind::Verbatim => None,
+            })
     }
 
     /// Total bytes held in image segments — the part a codec can act on.
@@ -264,7 +267,13 @@ mod tests {
 
     #[test]
     fn tile_sorts_out_of_order_regions() {
-        let l = tile("test", 100, 1, vec![(60, 20, spec(2, 5)), (10, 20, spec(2, 5))]).unwrap();
+        let l = tile(
+            "test",
+            100,
+            1,
+            vec![(60, 20, spec(2, 5)), (10, 20, spec(2, 5))],
+        )
+        .unwrap();
         l.validate().unwrap();
         let offsets: Vec<u64> = l.segments.iter().map(|s| s.src_offset).collect();
         assert_eq!(offsets, vec![0, 10, 30, 60, 80]);
@@ -279,7 +288,12 @@ mod tests {
 
     #[test]
     fn overlapping_regions_are_rejected() {
-        let e = tile("test", 100, 1, vec![(10, 30, spec(2, 5)), (20, 20, spec(2, 5))]);
+        let e = tile(
+            "test",
+            100,
+            1,
+            vec![(10, 30, spec(2, 5)), (20, 20, spec(2, 5))],
+        );
         assert!(e.is_err());
     }
 

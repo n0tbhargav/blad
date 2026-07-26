@@ -409,6 +409,37 @@ metadata fidelity, GPU backend proven to match the CPU path within a stated tole
    data is already compressed. More tractable than general JPEG — predictive coding plus
    Huffman, no DCT or quantisation tables.
 
+### CI and release policy (2026-07-25)
+
+`.github/workflows/ci.yml` builds and tests on five targets — linux x86_64/aarch64,
+macos aarch64/x86_64, windows x86_64 — plus a `fmt + clippy` job with
+`RUSTFLAGS: -D warnings`. Windows is marked `experimental` and allowed to fail until it
+passes once, so a known-unknown does not read as a regression.
+
+**No release binaries yet, deliberately.** A prebuilt binary is a promise that archives
+made with it stay readable, and the format has changed four times in a week. Publishing
+binaries before the format is frozen invites exactly the failure mode an archival tool
+cannot have: someone's archive unreadable by the next version. Ship binaries at **0.1.0**,
+gated on a written format-stability guarantee and a `blad` refusal path for archives whose
+format version it does not know.
+
+Portability work that CI forced out into the open:
+
+- `blad-mem` was unix-only. `getrusage` is now `#[cfg(unix)]`, with a Windows
+  `K32GetProcessMemoryInfo`/`PeakWorkingSetSize` path (already bytes — no unit trap on
+  that side) and a zero-returning fallback elsewhere. Instrumentation must never be
+  load-bearing, so an unknown target degrades `--stats` rather than failing to build.
+  `libc` and `windows-sys` are now target-gated dependencies rather than unconditional.
+- Clippy under `-D warnings` flagged the `Codec` trait's 8-argument `encode`/`decode`.
+  Replaced with a `Frame` descriptor (`width`, `height`, `channels`, `depth`,
+  `little_endian`) passed to **both** halves. That is a correctness argument, not tidiness:
+  a round trip whose two sides disagree about endianness or depth does not fail loudly, it
+  silently produces wrong pixels. One value passed to both cannot disagree. The test
+  mock's implementation dropped from 22 lines to 6.
+
+Verified after the refactor: the real 3FR still archives to 0.530 and restores
+byte-identically, 48 tests green.
+
 ### Crate layout
 
 ```

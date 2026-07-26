@@ -5,13 +5,16 @@
 //!
 //! - **Heap** — bytes we allocated, counted exactly by wrapping the global allocator.
 //!   Resettable, so it can be attributed per phase.
-//! - **RSS** — what the OS considers resident, a monotonic high-water mark from
-//!   `getrusage`. Includes things the heap counter cannot see: dirty pages from temp
-//!   files, mapped libraries, allocator overhead.
+//! - **RSS** — what the OS considers resident, a monotonic high-water mark. Includes
+//!   things the heap counter cannot see: mapped libraries, allocator overhead, and any
+//!   memory allocated inside vendored C++ rather than through Rust's global allocator.
 //!
 //! The gap between them is the cost of everything that is not our data structures. For
-//! blad that is dominated by the temp files the shell-out codec round-trips through —
-//! which is exactly the kind of thing that stays invisible if you only measure one.
+//! blad that is dominated by libjxl's own working set, which the heap counter cannot
+//! see at all — exactly the kind of thing that stays invisible if you only measure one.
+//!
+//! Both numbers are for **this process only**. `/usr/bin/time -l` includes children and
+//! will attribute a subprocess's peak to us; that mistake was made once here already.
 //!
 //! # Usage
 //!
@@ -95,6 +98,7 @@ pub fn reset_heap_peak() {
 ///
 /// `ru_maxrss` is bytes on macOS and kilobytes on Linux. Getting that wrong yields
 /// silently 1024x-wrong numbers, which is worse than no measurement.
+#[cfg(unix)]
 pub fn rss_highwater() -> u64 {
     unsafe {
         let mut ru: libc::rusage = std::mem::zeroed();
@@ -108,6 +112,36 @@ pub fn rss_highwater() -> u64 {
             v * 1024
         }
     }
+}
+
+/// Process peak resident set size, in bytes.
+///
+/// Windows has no `getrusage`; `PeakWorkingSetSize` is the equivalent high-water mark,
+/// and is already in bytes, so there is no unit trap on this side.
+#[cfg(windows)]
+pub fn rss_highwater() -> u64 {
+    use windows_sys::Win32::System::ProcessStatus::{
+        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    unsafe {
+        let mut pmc: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+        let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        if K32GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, size) == 0 {
+            return 0;
+        }
+        pmc.PeakWorkingSetSize as u64
+    }
+}
+
+/// Process peak resident set size, in bytes.
+///
+/// No implementation for this target. Instrumentation is never load-bearing, so
+/// reporting zero degrades `--stats` rather than breaking the build.
+#[cfg(not(any(unix, windows)))]
+pub fn rss_highwater() -> u64 {
+    0
 }
 
 /// Time, heap, and RSS for one phase of work.

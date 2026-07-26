@@ -64,7 +64,9 @@ impl<'a, R: Read + Seek> Reader<'a, R> {
 
     fn bytes_at(&mut self, off: u64, len: usize) -> Result<Vec<u8>> {
         if off.saturating_add(len as u64) > self.file_len {
-            return Err(malformed(format!("read of {len} bytes at {off} runs past EOF")));
+            return Err(malformed(format!(
+                "read of {len} bytes at {off} runs past EOF"
+            )));
         }
         let mut v = vec![0u8; len];
         self.src.seek(SeekFrom::Start(off))?;
@@ -91,10 +93,10 @@ struct Entry {
 
 fn type_size(dtype: u16) -> Option<u64> {
     Some(match dtype {
-        1 | 2 | 6 | 7 => 1,  // BYTE, ASCII, SBYTE, UNDEFINED
-        3 | 8 => 2,          // SHORT, SSHORT
+        1 | 2 | 6 | 7 => 1,   // BYTE, ASCII, SBYTE, UNDEFINED
+        3 | 8 => 2,           // SHORT, SSHORT
         4 | 9 | 11 | 13 => 4, // LONG, SLONG, FLOAT, IFD
-        5 | 10 | 12 => 8,    // RATIONAL, SRATIONAL, DOUBLE
+        5 | 10 | 12 => 8,     // RATIONAL, SRATIONAL, DOUBLE
         _ => return None,
     })
 }
@@ -116,7 +118,10 @@ impl Ifd {
         let esize = type_size(e.dtype)
             .ok_or_else(|| malformed(format!("tag {tag}: unknown type {}", e.dtype)))?;
         if u64::from(e.count) > MAX_VALUES {
-            return Err(malformed(format!("tag {tag}: {} values exceeds cap", e.count)));
+            return Err(malformed(format!(
+                "tag {tag}: {} values exceeds cap",
+                e.count
+            )));
         }
         let total = esize * u64::from(e.count);
 
@@ -230,8 +235,15 @@ fn collect_ifds<R: Read + Seek>(r: &mut Reader<R>, first: u64) -> Result<Vec<Ifd
 ///
 /// Returns `None` — not an error — for anything unsupported. An unmodelled image simply
 /// stays in the skeleton, which is always correct, merely less compact.
-fn image_region<R: Read + Seek>(r: &mut Reader<R>, ifd: &Ifd) -> Result<Option<(u64, u64, ImageSpec)>> {
-    if ifd.scalar(r, TAG_COMPRESSION)?.unwrap_or(COMPRESSION_NONE as u32) != u32::from(COMPRESSION_NONE) {
+fn image_region<R: Read + Seek>(
+    r: &mut Reader<R>,
+    ifd: &Ifd,
+) -> Result<Option<(u64, u64, ImageSpec)>> {
+    if ifd
+        .scalar(r, TAG_COMPRESSION)?
+        .unwrap_or(COMPRESSION_NONE as u32)
+        != u32::from(COMPRESSION_NONE)
+    {
         return Ok(None); // already compressed; recompressing it is the Lepton problem
     }
     let (Some(width), Some(height)) = (
@@ -287,7 +299,9 @@ fn image_region<R: Read + Seek>(r: &mut Reader<R>, ifd: &Ifd) -> Result<Option<(
         return Ok(None);
     }
     if start + len > r.file_len {
-        return Err(malformed(format!("strip data at {start}+{len} runs past EOF")));
+        return Err(malformed(format!(
+            "strip data at {start}+{len} runs past EOF"
+        )));
     }
     Ok(Some((start, len, spec)))
 }
@@ -372,7 +386,7 @@ mod tests {
         }
         b.extend_from_slice(&0u32.to_le_bytes());
         assert_eq!(b.len() as u32, data_off);
-        b.extend(std::iter::repeat(0xAB).take(px));
+        b.extend(std::iter::repeat_n(0xAB, px));
         b
     }
 
@@ -424,9 +438,8 @@ mod tests {
         buf.truncate(buf.len() / 2);
         let len = buf.len() as u64;
         // Must not panic; either an error or a layout with no image segment is fine.
-        match analyze(&mut Cursor::new(&buf), len) {
-            Ok(l) => assert_eq!(l.payload_len(), 0),
-            Err(_) => {}
+        if let Ok(l) = analyze(&mut Cursor::new(&buf), len) {
+            assert_eq!(l.payload_len(), 0)
         }
     }
 }

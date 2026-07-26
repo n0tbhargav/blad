@@ -8,7 +8,9 @@ use anyhow::{bail, Context, Result};
 use blad_codec::Jxl;
 use blad_container::{Layout, SegmentKind};
 use clap::{Parser, Subcommand};
-use comfy_table::{presets, Attribute, Cell, CellAlignment, Color, ContentArrangement, Table, TableComponent};
+use comfy_table::{
+    presets, Attribute, Cell, CellAlignment, Color, ContentArrangement, Table, TableComponent,
+};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
@@ -19,7 +21,11 @@ use std::path::{Path, PathBuf};
 static ALLOC: blad_mem::Tracking<std::alloc::System> = blad_mem::Tracking(std::alloc::System);
 
 #[derive(Parser)]
-#[command(name = "blad", version, about = "Colour-correct, memory-safe image tooling")]
+#[command(
+    name = "blad",
+    version,
+    about = "Colour-correct, memory-safe image tooling"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -126,8 +132,10 @@ fn colour() -> bool {
 /// Eighth-blocks give sub-character resolution, so a 12-wide bar distinguishes ~1%
 /// differences instead of rounding to 8% steps.
 fn bar(fraction: f64, width: usize) -> String {
-    const PARTIAL: [char; 8] = ['\u{258f}', '\u{258e}', '\u{258d}', '\u{258c}',
-                                '\u{258b}', '\u{258a}', '\u{2589}', '\u{2588}'];
+    const PARTIAL: [char; 8] = [
+        '\u{258f}', '\u{258e}', '\u{258d}', '\u{258c}', '\u{258b}', '\u{258a}', '\u{2589}',
+        '\u{2588}',
+    ];
     let eighths = (fraction.clamp(0.0, 1.0) * width as f64 * 8.0).round() as usize;
     let full = eighths / 8;
     let rem = eighths % 8;
@@ -145,11 +153,19 @@ fn bar(fraction: f64, width: usize) -> String {
 }
 
 fn green(c: Cell) -> Cell {
-    if colour() { c.fg(Color::Green) } else { c }
+    if colour() {
+        c.fg(Color::Green)
+    } else {
+        c
+    }
 }
 
 fn dim(c: Cell) -> Cell {
-    if colour() { c.add_attribute(Attribute::Dim) } else { c }
+    if colour() {
+        c.add_attribute(Attribute::Dim)
+    } else {
+        c
+    }
 }
 
 /// Borderless, with a single rule under the header.
@@ -255,7 +271,10 @@ fn print_layout(input: &Path, layout: &Layout) {
     println!("{t}");
     let pct = 100.0 * layout.payload_len() as f64 / layout.total_len.max(1) as f64;
     if layout.orientation != 1 {
-        println!("  orientation {} (pixels are not stored upright)", layout.orientation);
+        println!(
+            "  orientation {} (pixels are not stored upright)",
+            layout.orientation
+        );
     }
     println!(
         "  {} total · {} compressible ({pct:.1}%) · {} verbatim",
@@ -273,7 +292,10 @@ fn print_stats(input: &Path, r: &blad_archive::ArchiveReport) {
     let t = &r.timings;
     let ms = |d: std::time::Duration| format!("{:.0} ms", d.as_secs_f64() * 1000.0);
     let pct = |d: std::time::Duration| {
-        format!("{:.0}%", 100.0 * d.as_secs_f64() / t.total.as_secs_f64().max(1e-9))
+        format!(
+            "{:.0}%",
+            100.0 * d.as_secs_f64() / t.total.as_secs_f64().max(1e-9)
+        )
     };
 
     let share = |d: std::time::Duration| d.as_secs_f64() / t.total.as_secs_f64().max(1e-9);
@@ -384,7 +406,9 @@ fn cmd_archive(
 
     let (mut total_in, mut total_out, mut failures) = (0u64, 0u64, 0usize);
     for input in inputs {
-        let dst = output.map(PathBuf::from).unwrap_or_else(|| archive_name(input));
+        let dst = output
+            .map(PathBuf::from)
+            .unwrap_or_else(|| archive_name(input));
         match blad_archive::archive(input, &dst, &c) {
             Ok(r) => {
                 total_in += r.original_len;
@@ -453,7 +477,11 @@ fn cmd_verify(archives: &[PathBuf], quick: bool) -> Result<()> {
     let mut failures = 0usize;
 
     for a in archives {
-        let archive = a.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let archive = a
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         let outcome = match &c {
             Some(codec) => blad_archive::verify(a, codec),
             None => blad_archive::verify_quick(a),

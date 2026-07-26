@@ -6,5 +6,11 @@ license.workspace = true
 repository.workspace = true
 description = "Heap and RSS instrumentation for blad"
 
-[dependencies]
+[target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }

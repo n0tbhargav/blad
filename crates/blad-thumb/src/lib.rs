@@ -115,10 +115,10 @@ fn downscale(
     for oy in 0..oh {
         // Source rows covered by this output row, as a half-open range.
         let y0 = oy * h / oh;
-        let y1 = (((oy + 1) * h + oh - 1) / oh).min(h).max(y0 + 1);
+        let y1 = ((oy + 1) * h).div_ceil(oh).min(h).max(y0 + 1);
         for ox in 0..ow {
             let x0 = ox * w / ow;
-            let x1 = (((ox + 1) * w + ow - 1) / ow).min(w).max(x0 + 1);
+            let x1 = ((ox + 1) * w).div_ceil(ow).min(w).max(x0 + 1);
 
             let mut acc = [0.0f32; 3];
             let mut n = 0.0f32;
@@ -153,7 +153,7 @@ pub fn orient(rgb: &[u8], width: u32, height: u32, orientation: u16) -> (Vec<u8>
     }
     let (w, h) = (width as usize, height as usize);
     // Orientations 5-8 exchange the axes.
-    let transposed = matches!(orientation, 5 | 6 | 7 | 8);
+    let transposed = matches!(orientation, 5..=8);
     let (ow, oh) = if transposed { (h, w) } else { (w, h) };
     let mut out = vec![0u8; ow * oh * 3];
 
@@ -203,25 +203,12 @@ pub fn thumbnail(
     // Downscale first, rotate second: rotating a 512px image moves ~0.75 MB instead of
     // the tens of MB a full-size preview would.
     let (ow, oh) = fit(width, height, max_edge);
-    let small = downscale(
-        rgb,
-        width,
-        height,
-        bytes_per_sample,
-        little_endian,
-        ow,
-        oh,
-    );
+    let small = downscale(rgb, width, height, bytes_per_sample, little_endian, ow, oh);
     let (small, ow, oh) = orient(&small, ow, oh, orientation);
 
     let mut buf = Vec::new();
     jpeg_encoder::Encoder::new(&mut buf, QUALITY)
-        .encode(
-            &small,
-            ow as u16,
-            oh as u16,
-            jpeg_encoder::ColorType::Rgb,
-        )
+        .encode(&small, ow as u16, oh as u16, jpeg_encoder::ColorType::Rgb)
         .map_err(|e| Error::Jpeg(e.to_string()))?;
     Ok(buf)
 }
@@ -321,7 +308,11 @@ mod tests {
         let px: Vec<u8> = (0..(4 * 3 * 3) as u8).collect();
         for o in 1..=8u16 {
             let (out, w, h) = orient(&px, 4, 3, o);
-            assert_eq!(out.len(), px.len(), "orientation {o} changed the pixel count");
+            assert_eq!(
+                out.len(),
+                px.len(),
+                "orientation {o} changed the pixel count"
+            );
             assert_eq!((w * h) as usize * 3, out.len());
             let mut a = px.clone();
             let mut b = out.clone();

@@ -53,7 +53,7 @@ pub struct Planes {
 
 /// Split a mosaic into four sub-planes.
 pub fn split(mosaic: &[u8], width: u32, height: u32, bytes_per_sample: usize) -> Result<Planes> {
-    if width % 2 != 0 || height % 2 != 0 {
+    if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
         return Err(Error::OddDimensions { width, height });
     }
     let bps = bytes_per_sample;
@@ -146,7 +146,10 @@ mod tests {
     #[test]
     fn split_routes_positions_correctly() {
         // 2×2 mosaic of 16-bit samples, raster order 1,2,3,4 (little-endian bytes).
-        let src: Vec<u8> = [1u16, 2, 3, 4].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let src: Vec<u8> = [1u16, 2, 3, 4]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
         let p = split(&src, 2, 2, 2).unwrap();
         assert_eq!(p.planes[0], vec![1, 0]); // (0,0)
         assert_eq!(p.planes[1], vec![2, 0]); // (1,0)
@@ -189,7 +192,7 @@ mod tests {
     #[test]
     fn wrong_length_rejected() {
         assert!(matches!(
-            split(&vec![0u8; 10], 4, 4, 2),
+            split(&[0u8; 10], 4, 4, 2),
             Err(Error::WrongLength { .. })
         ));
     }

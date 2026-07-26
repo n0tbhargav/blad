@@ -79,6 +79,28 @@ impl Depth {
     }
 }
 
+/// Everything a codec needs to know about a rectangle of raw samples.
+///
+/// Encode and decode take the *same* descriptor, and that symmetry is the point: a
+/// round trip whose two halves disagree about any one field does not fail loudly, it
+/// silently produces wrong pixels. One value passed to both sides cannot disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame {
+    pub width: u32,
+    pub height: u32,
+    pub channels: Channels,
+    pub depth: Depth,
+    /// Byte order of the samples *as stored in the file*.
+    pub little_endian: bool,
+}
+
+impl Frame {
+    /// Raw byte length of the samples this frame describes.
+    pub fn byte_len(&self) -> u64 {
+        u64::from(self.width) * u64::from(self.height) * self.channels.count() * self.depth.bytes()
+    }
+}
+
 /// A lossless image codec operating on raw sample bytes.
 ///
 /// Implementations must be exactly reversible. This is asserted end-to-end on every
@@ -90,29 +112,11 @@ pub trait Codec: Sync {
 
     /// Encode `src` (raw samples in the file's byte order), writing the compressed
     /// representation to `out`. Returns bytes written.
-    fn encode(
-        &self,
-        src: &[u8],
-        width: u32,
-        height: u32,
-        ch: Channels,
-        depth: Depth,
-        little_endian: bool,
-        out: &mut dyn Write,
-    ) -> Result<u64>;
+    fn encode(&self, src: &[u8], frame: Frame, out: &mut dyn Write) -> Result<u64>;
 
     /// Decode `data`, writing raw samples in the file's byte order to `out`.
     /// Returns bytes written.
-    fn decode(
-        &self,
-        data: &[u8],
-        width: u32,
-        height: u32,
-        ch: Channels,
-        depth: Depth,
-        little_endian: bool,
-        out: &mut dyn Write,
-    ) -> Result<u64>;
+    fn decode(&self, data: &[u8], frame: Frame, out: &mut dyn Write) -> Result<u64>;
 }
 
 /// JPEG XL via vendored libjxl, in process.
@@ -176,17 +180,15 @@ impl Codec for Jxl {
         "jxl"
     }
 
-    fn encode(
-        &self,
-        src: &[u8],
-        width: u32,
-        height: u32,
-        ch: Channels,
-        depth: Depth,
-        little_endian: bool,
-        out: &mut dyn Write,
-    ) -> Result<u64> {
-        let expected = u64::from(width) * u64::from(height) * ch.count() * depth.bytes();
+    fn encode(&self, src: &[u8], frame: Frame, out: &mut dyn Write) -> Result<u64> {
+        let Frame {
+            width,
+            height,
+            channels: ch,
+            depth,
+            little_endian,
+        } = frame;
+        let expected = frame.byte_len();
         if src.len() as u64 != expected {
             return Err(Error::SizeMismatch {
                 expected,
@@ -221,19 +223,19 @@ impl Codec for Jxl {
         let nch = ch.count() as u32;
         let encoded: Vec<u8> = match depth {
             Depth::Eight => {
-                let frame = jpegxl_rs::encode::EncoderFrame::new(src)
+                let ef = jpegxl_rs::encode::EncoderFrame::new(src)
                     .num_channels(nch)
                     .endianness(endianness(little_endian));
-                enc.encode_frame::<u8, u8>(&frame, width, height)
+                enc.encode_frame::<u8, u8>(&ef, width, height)
                     .map_err(|e| Error::Backend(e.to_string()))?
                     .data
             }
             Depth::Sixteen => {
                 let samples = as_u16(src);
-                let frame = jpegxl_rs::encode::EncoderFrame::new(samples.as_ref())
+                let ef = jpegxl_rs::encode::EncoderFrame::new(samples.as_ref())
                     .num_channels(nch)
                     .endianness(endianness(little_endian));
-                enc.encode_frame::<u16, u16>(&frame, width, height)
+                enc.encode_frame::<u16, u16>(&ef, width, height)
                     .map_err(|e| Error::Backend(e.to_string()))?
                     .data
             }
@@ -243,22 +245,18 @@ impl Codec for Jxl {
         Ok(encoded.len() as u64)
     }
 
-    fn decode(
-        &self,
-        data: &[u8],
-        width: u32,
-        height: u32,
-        ch: Channels,
-        depth: Depth,
-        little_endian: bool,
-        out: &mut dyn Write,
-    ) -> Result<u64> {
+    fn decode(&self, data: &[u8], frame: Frame, out: &mut dyn Write) -> Result<u64> {
+        let Frame {
+            depth,
+            little_endian,
+            ..
+        } = frame;
         let runner = jpegxl_rs::ThreadsRunner::default();
         let dec = jpegxl_rs::decoder_builder()
             .parallel_runner(&runner)
             .build()
             .map_err(|e| Error::Backend(e.to_string()))?;
-        let expected = u64::from(width) * u64::from(height) * ch.count() * depth.bytes();
+        let expected = frame.byte_len();
 
         let bytes: Vec<u8> = match depth {
             Depth::Eight => {
@@ -313,14 +311,30 @@ mod tests {
             .collect()
     }
 
+    fn gray16(w: u32, h: u32, le: bool) -> Frame {
+        Frame {
+            width: w,
+            height: h,
+            channels: Channels::Gray,
+            depth: Depth::Sixteen,
+            little_endian: le,
+        }
+    }
+
     fn round_trip(w: u32, h: u32, ch: Channels, depth: Depth, le: bool) {
         let c = Jxl { effort: 1 };
-        let n = (u64::from(w) * u64::from(h) * ch.count() * depth.bytes()) as usize;
-        let src = noise(n, 99);
+        let f = Frame {
+            width: w,
+            height: h,
+            channels: ch,
+            depth,
+            little_endian: le,
+        };
+        let src = noise(f.byte_len() as usize, 99);
         let mut enc = Vec::new();
-        c.encode(&src, w, h, ch, depth, le, &mut enc).unwrap();
+        c.encode(&src, f, &mut enc).unwrap();
         let mut dec = Vec::new();
-        c.decode(&enc, w, h, ch, depth, le, &mut dec).unwrap();
+        c.decode(&enc, f, &mut dec).unwrap();
         assert_eq!(src, dec, "{w}x{h} {ch:?} {depth:?} le={le}");
     }
 
@@ -347,15 +361,7 @@ mod tests {
     fn encode_rejects_wrong_byte_count() {
         let c = Jxl::default();
         assert!(matches!(
-            c.encode(
-                &[0u8; 10],
-                4,
-                4,
-                Channels::Gray,
-                Depth::Sixteen,
-                false,
-                &mut Vec::new()
-            ),
+            c.encode(&[0u8; 10], gray16(4, 4, false), &mut Vec::new()),
             Err(Error::SizeMismatch { .. })
         ));
     }
@@ -366,12 +372,11 @@ mod tests {
         let c = Jxl { effort: 1 };
         let src = noise(16 * 16 * 2, 3);
         for le in [true, false] {
+            let f = gray16(16, 16, le);
             let mut enc = Vec::new();
-            c.encode(&src, 16, 16, Channels::Gray, Depth::Sixteen, le, &mut enc)
-                .unwrap();
+            c.encode(&src, f, &mut enc).unwrap();
             let mut out = Vec::new();
-            c.decode(&enc, 16, 16, Channels::Gray, Depth::Sixteen, le, &mut out)
-                .unwrap();
+            c.decode(&enc, f, &mut out).unwrap();
             assert_eq!(src, out, "le={le}");
         }
     }
