@@ -1,0 +1,10 @@
+[package]
+name = "blad-meta"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Exif, TIFF and DNG metadata reading for blad"
+
+[dependencies]
+blad-container.workspace = true

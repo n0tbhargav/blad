@@ -73,6 +73,7 @@ dependencies = [
  "blad-codec",
  "blad-container",
  "blad-mem",
+ "blad-meta",
  "clap",
  "comfy-table",
  "serde_json",
@@ -123,6 +124,13 @@ version = "0.0.2"
 dependencies = [
  "libc",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "blad-meta"
+version = "0.0.2"
+dependencies = [
+ "blad-container",
 ]
 
 [[package]]

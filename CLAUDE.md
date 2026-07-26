@@ -404,9 +404,44 @@ metadata fidelity, GPU backend proven to match the CPU path within a stated tole
    macOS has *built-in* RAW support and lists Hasselblad X1D-50c among its known cameras.
    That path is Apple's and is not open to third parties at any price.
 
-5. **`blad exif`** — read standard TIFF/Exif/GPS IFDs. The IFD walker already exists;
-   what is missing is a tag dictionary and type-aware formatting. Explicitly excluded
-   from v1: maker notes (pass through opaquely) and *writing* metadata.
+5. ~~**`blad exif`**~~ **Done.** `blad-container::ifd` (public directory walker) +
+   `blad-meta` (dictionary, typed values, formatting) + `blad exif`.
+
+   **Prior-art check inverted the moxcms conclusion — by measurement.** `kamadak-exif`
+   (11.7M downloads) reads **only IFD0**. On a 3FR that is the embedded *preview*, so it
+   reports 41 fields and misses `ColorMatrix1`, `AsShotNeutral`, `BlackLevel`,
+   `DefaultCropOrigin` and `UniqueCameraModel` entirely — precisely the tags Phase 2
+   needs. Our walker already followed SubIFDs. So: build, do not depend. The moxcms
+   lesson is "check prior art", not "always depend".
+
+   Design decisions:
+   - **No TUI.** One-shot output that gets piped, grepped and diffed. `--json | jq` is
+     the interactive story. No new dependencies: clap + comfy-table.
+   - **Directory-scoped tag lookup.** Tag 1 is `GPSLatitudeRef` under GPS and
+     `InteroperabilityIndex` under Interop. A flat table produces confident nonsense.
+   - **Never guess, and never hide the gap.** Unknown tag → `Tag(0x8290)` with type and
+     count. Unknown enumerant → the raw number. Unreadable entry → `<unreadable: why>`.
+     `--all` reveals unnamed tags and the footer counts them, so the size of our
+     ignorance is visible rather than implied.
+   - **Precision belongs in JSON.** Display rounds `AsShotNeutral` to 0.447106; JSON
+     also carries `[[8192,19902],…]`, the file's own rationals. Rounding is right for a
+     table and wrong for anything feeding a colour matrix.
+   - **`--redact`** for GPS, serials and owner names — the user's own files carry a home
+     address. Rows stay, values do not, so redaction is visible.
+   - Verified value-for-value against exiftool, and offsets verified by seeking to them
+     in the file: `0x120` really does hold `00000001 0000007D` = 1/125.
+
+   Still excluded: maker notes (opaque), XMP/IPTC internals (opaque), and all *writing*.
+
+6. **Reference-file finding: most 3FRs are LJ92-compressed.** Hasselblad's own sample
+   files (CFV 2007, H3D-39II 2007, ixpress CF132 2013) all declare
+   `Compression = JPEG (7)` on the CFA SubIFD — lossless JPEG. All three restore
+   byte-identically but archive at **1.000**. Only the X1D-era uncompressed files give
+   0.53.
+
+   **This raises LJ92 recompression from "unlocks CR2/NEF" to "unlocks most of
+   Hasselblad's own catalogue".** It is now clearly the highest-leverage format work.
+   The README no longer claims 0.53 for "3FR" — it claims it for *uncompressed raw*.
 6. **`indicatif` progress.** 8s per file, minutes per library. Progress must go to
    **stderr** so `--json` stays parseable on stdout.
 7. **Batch `--jobs`**, bounded by a memory budget rather than core count — and the

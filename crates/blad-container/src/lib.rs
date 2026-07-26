@@ -16,6 +16,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
+pub mod ifd;
 pub mod tiff;
 
 #[derive(Debug, thiserror::Error)]

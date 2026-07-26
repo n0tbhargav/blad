@@ -137,12 +137,46 @@ blad verify <archives>...    prove an archive still restores
   --quick                    checksum stored bytes only, no decode
 
 blad restore <archive>       write the original back out
+
+blad exif <files>...         read Exif, TIFF and DNG metadata
+  -g, --group <G>            tiff | sub | exif | gps | interop
+  -t, --tag <NAME>           only matching tags, repeatable
+  -a, --all                  include tags with no dictionary entry
+      --redact               hide GPS, serials and owner names
+      --offsets              show each value's type and file offset
+      --json                 machine-readable, with exact rationals
 ```
 
 **Effort is non-monotonic.** Higher is not reliably smaller: on Bayer planes effort 7
 encoded *larger* than effort 4 and took 3.8× longer; on a 51MP RGB frame effort 9 was
 larger than effort 7 and 36× slower than 4. The default of 4 was chosen by measurement.
 Effort 1 costs about 5% ratio for a 3× speedup, which is reasonable for bulk work.
+
+## Reading metadata
+
+```console
+$ blad exif photo.3FR
+
+▨ SubIFD0  @ 0x1C4  (14 tags)
+    PhotometricInterpretation  CFA (Bayer mosaic) (32803)
+ ⊞  ColorMatrix1                0.493206  -0.083518   0.014067
+                               -0.487784   1.186830   0.343664
+                               -0.113823   0.196107   0.706705
+    AsShotNeutral              0.447106, 1, 0.679101
+```
+
+Two things separate this from the alternatives. It reaches **SubIFDs**, where raw files
+keep their camera-characterization tags — the Rust Exif crates stop at IFD0, which on a
+3FR is the embedded preview, so `ColorMatrix1` and `AsShotNeutral` are simply absent from
+what they report. And it never guesses: a tag with no dictionary entry is shown by
+number, an unrecognised enumerant shows its raw value, and an unreadable entry says so
+rather than being quietly dropped.
+
+`--json` carries the file's own rationals (`[[8192, 19902], …]`) alongside the rounded
+display value, because a colour matrix is something you compute with, not just read.
+
+ExifTool remains the reference for vendor exotica and for *writing*; blad reads the
+standard directories, starts instantly, and is already in your hand.
 
 ## Previews, for free
 
@@ -168,7 +202,13 @@ orientation tag, so portrait frames are not shown sideways.
 
 blad only recompresses pixel data stored **uncompressed**. Already-compressed regions —
 an LZW TIFF, a vendor-compressed CR2 or NEF — are kept verbatim, so those files archive
-at roughly 1.000. Modelling an existing compressed bitstream well enough to reproduce it
+at roughly 1.000.
+
+**This includes many 3FRs.** The X1D-era files that give 0.53 store their mosaic
+uncompressed; the older H3D, CFV and ixpress backs write `Compression = JPEG`, meaning
+lossless JPEG, and archive at 1.000. Verified against Hasselblad reference files from
+three camera generations — all restore byte-identically, but only the uncompressed ones
+shrink. Do not read the 0.53 figure as "3FR"; read it as "uncompressed raw". Modelling an existing compressed bitstream well enough to reproduce it
 byte-for-byte is a much harder problem, solved so far only for JPEG (by libjxl). blad
 trades that depth for breadth.
 

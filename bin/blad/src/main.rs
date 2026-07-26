@@ -84,6 +84,32 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Read Exif, TIFF and DNG metadata.
+    Exif {
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+        /// Restrict to directories: tiff, sub, exif, gps, interop. Repeatable.
+        #[arg(short, long)]
+        group: Vec<String>,
+        /// Only tags whose name contains this. Repeatable, case-insensitive.
+        #[arg(short, long)]
+        tag: Vec<String>,
+        /// Include tags with no dictionary entry, shown by number.
+        #[arg(short, long)]
+        all: bool,
+        /// Hide GPS coordinates, serial numbers and owner names.
+        #[arg(long)]
+        redact: bool,
+        /// Values without unit interpretation.
+        #[arg(long)]
+        raw: bool,
+        /// Show the file offset and type of every value.
+        #[arg(long)]
+        offsets: bool,
+        /// One JSON object per file.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show how blad decomposes a file into segments. Development aid.
     #[command(hide = true)]
     Layout { input: PathBuf },
@@ -102,6 +128,16 @@ fn main() -> Result<()> {
         Command::Verify { archives, quick } => cmd_verify(&archives, quick),
         Command::Restore { archive, output } => cmd_restore(&archive, output.as_deref()),
         Command::Thumb { archive, output } => cmd_thumb(&archive, output.as_deref()),
+        Command::Exif {
+            files,
+            group,
+            tag,
+            all,
+            redact,
+            raw,
+            offsets,
+            json,
+        } => cmd_exif(&files, &group, &tag, all, redact, raw, offsets, json),
         Command::Layout { input } => {
             print_layout(&input, &blad_archive::plan(&input)?);
             Ok(())
@@ -605,4 +641,365 @@ fn cmd_restore(archive: &Path, output: Option<&Path>) -> Result<()> {
     println!("{}  ({})", dst.display(), human(m.original.len));
     println!("  sha256 verified: {}", m.original.sha256);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// exif
+// ---------------------------------------------------------------------------
+
+/// Glyphs marking what a row *is*. Colour repeats the same information for people who
+/// read colour faster, but the glyph carries it alone — the output stays legible piped
+/// to a file, on a monochrome terminal, or with NO_COLOR set.
+fn group_glyph(kind: blad_container::ifd::IfdKind) -> (&'static str, Color) {
+    use blad_container::ifd::IfdKind::*;
+    match kind {
+        Main(_) => ("▤", Color::Cyan),
+        Sub(_) => ("▨", Color::Magenta),
+        Exif => ("◈", Color::Blue),
+        Gps => ("⌖", Color::Yellow),
+        Interop => ("⇄", Color::DarkGrey),
+    }
+}
+
+fn field_glyph(f: &blad_meta::Field) -> (&'static str, Option<Color>) {
+    use blad_meta::Kind::*;
+    match f.kind {
+        _ if f.redacted => ("•", Some(Color::DarkGrey)),
+        _ if f.name.is_none() => ("?", Some(Color::DarkGrey)),
+        Sensitive => ("!", Some(Color::Yellow)),
+        Opaque => ("▪", Some(Color::DarkGrey)),
+        Pointer => ("→", Some(Color::Blue)),
+        Matrix3x3 => ("⊞", Some(Color::Magenta)),
+        Seconds | FNumber | Millimetres | Iso => ("◐", Some(Color::Green)),
+        _ => (" ", None),
+    }
+}
+
+fn paint(c: Cell, col: Color) -> Cell {
+    if colour() {
+        c.fg(col)
+    } else {
+        c
+    }
+}
+
+/// A 3x3 colour matrix printed as three rows.
+///
+/// Nine rationals on one line is technically the same information and practically
+/// unreadable — and these are the numbers that define what the camera's colours *mean*,
+/// so they are worth the four extra lines.
+fn matrix_rows(v: &blad_meta::Value) -> Option<Vec<String>> {
+    let blad_meta::Value::Rational(r) = v else {
+        return None;
+    };
+    if r.len() != 9 {
+        return None;
+    }
+    let n: Vec<f64> = r
+        .iter()
+        .map(|&(a, b)| if b == 0 { 0.0 } else { a as f64 / b as f64 })
+        .collect();
+    Some(
+        n.chunks(3)
+            .map(|row| {
+                row.iter()
+                    .map(|x| format!("{x:>9.6}"))
+                    .collect::<Vec<_>>()
+                    .join("  ")
+            })
+            .collect(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_exif(
+    files: &[PathBuf],
+    groups: &[String],
+    tags: &[String],
+    all: bool,
+    redact: bool,
+    raw: bool,
+    offsets: bool,
+    json: bool,
+) -> Result<()> {
+    let opts = blad_meta::Options {
+        all,
+        redact,
+        raw,
+        groups: groups.to_vec(),
+        tags: tags.to_vec(),
+    };
+
+    for (i, path) in files.iter().enumerate() {
+        let report = blad_meta::read(path, &opts)
+            .with_context(|| format!("reading metadata from {}", path.display()))?;
+
+        if json {
+            println!("{}", exif_json(path, &report));
+            continue;
+        }
+
+        if i > 0 {
+            println!();
+        }
+        print_exif(path, &report, offsets, files.len() > 1 || !json);
+    }
+    Ok(())
+}
+
+fn print_exif(path: &Path, report: &blad_meta::Report, offsets: bool, _header: bool) {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let order = if report.little_endian {
+        "little-endian"
+    } else {
+        "big-endian"
+    };
+
+    let title = Cell::new(format!("▸ {name}"));
+    println!(
+        "{}  {}",
+        if colour() {
+            format!("\u{1b}[1m▸ {name}\u{1b}[0m")
+        } else {
+            format!("▸ {name}")
+        },
+        if colour() {
+            format!(
+                "\u{1b}[2m{}  ·  {}  ·  {} tags\u{1b}[0m",
+                human(report.file_len),
+                order,
+                report.field_count()
+            )
+        } else {
+            format!(
+                "{}  ·  {}  ·  {} tags",
+                human(report.file_len),
+                order,
+                report.field_count()
+            )
+        }
+    );
+    let _ = title;
+
+    if report.groups.is_empty() {
+        let msg = "  no tags matched — try --all, or widen --tag/--group";
+        println!(
+            "{}",
+            if colour() {
+                format!("\u{1b}[2m{msg}\u{1b}[0m")
+            } else {
+                msg.to_string()
+            }
+        );
+        return;
+    }
+
+    for g in &report.groups {
+        let (glyph, col) = group_glyph(g.kind);
+        println!();
+        let heading = format!("{glyph} {}", g.label);
+        if colour() {
+            println!(
+                "\u{1b}[1m{}\u{1b}[0m \u{1b}[2m@ 0x{:X}  ({} tags)\u{1b}[0m",
+                colourise(&heading, col),
+                g.offset,
+                g.fields.len()
+            );
+        } else {
+            println!("{heading}  @ 0x{:X}  ({} tags)", g.offset, g.fields.len());
+        }
+
+        let mut t = table();
+        // Content-sized, not terminal-sized. A metadata table stretched to 200 columns
+        // puts the value half a screen from its name.
+        t.set_content_arrangement(ContentArrangement::Disabled);
+        let mut header = vec![
+            dim(Cell::new("")),
+            dim(Cell::new("tag")),
+            dim(Cell::new("value")),
+        ];
+        if offsets {
+            header.push(dim(Cell::new("type")));
+            header.push(dim(Cell::new("offset")));
+        }
+        t.set_header(header);
+
+        for f in &g.fields {
+            let (fg, fcol) = field_glyph(f);
+            let marker = match fcol {
+                Some(c) => paint(Cell::new(fg), c),
+                None => Cell::new(fg),
+            };
+
+            let label = match f.name {
+                Some(_) => Cell::new(f.label()),
+                None => dim(Cell::new(f.label())),
+            };
+
+            // Matrices get their own multi-line cell; comfy-table keeps the alignment.
+            let value_cell = match matrix_rows(&f.value) {
+                Some(rows) if f.kind == blad_meta::Kind::Matrix3x3 => {
+                    paint(Cell::new(rows.join("\n")), Color::Magenta)
+                }
+                _ => match f.kind {
+                    blad_meta::Kind::Opaque => dim(Cell::new(&f.display)),
+                    _ if f.redacted => dim(Cell::new(&f.display)),
+                    _ if matches!(f.value, blad_meta::Value::Unreadable(_)) => {
+                        paint(Cell::new(&f.display), Color::Red)
+                    }
+                    blad_meta::Kind::Sensitive => paint(Cell::new(&f.display), Color::Yellow),
+                    _ => Cell::new(&f.display),
+                },
+            };
+
+            let mut row = vec![marker, label, value_cell];
+            if offsets {
+                row.push(dim(Cell::new(f.type_note())));
+                row.push(dim(right(format!("0x{:X}", f.offset))));
+            }
+            t.add_row(row);
+        }
+        println!("{t}");
+    }
+
+    if report.unknown_count() > 0 {
+        let n = report.unknown_count();
+        let msg = format!("  {n} tag(s) shown by number — no dictionary entry");
+        println!(
+            "{}",
+            if colour() {
+                format!("\u{1b}[2m{msg}\u{1b}[0m")
+            } else {
+                msg
+            }
+        );
+    }
+}
+
+fn colourise(s: &str, c: Color) -> String {
+    if !colour() {
+        return s.to_string();
+    }
+    let code = match c {
+        Color::Cyan => 36,
+        Color::Magenta => 35,
+        Color::Blue => 34,
+        Color::Yellow => 33,
+        Color::Green => 32,
+        Color::Red => 31,
+        _ => 90,
+    };
+    format!("\u{1b}[{code}m{s}\u{1b}[0m")
+}
+
+fn json_escape(s: &str) -> String {
+    let mut o = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o
+}
+
+/// Exact values for machine consumers.
+///
+/// The display string rounds — `AsShotNeutral` shows 0.447106 where the file holds
+/// 4471066599/10000000000. Rounding is right for a table and wrong for anything
+/// computing with the number, and camera characterization is exactly that: these values
+/// feed a colour matrix. So JSON carries the file's own representation alongside.
+fn json_raw(v: &blad_meta::Value) -> Option<String> {
+    const CAP: usize = 64;
+    match v {
+        blad_meta::Value::Rational(r) if r.len() <= CAP => Some(format!(
+            "[{}]",
+            r.iter()
+                .map(|(n, d)| format!("[{n},{d}]"))
+                .collect::<Vec<_>>()
+                .join(",")
+        )),
+        blad_meta::Value::Uint(x) if x.len() <= CAP => Some(format!(
+            "[{}]",
+            x.iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        )),
+        blad_meta::Value::Int(x) if x.len() <= CAP => Some(format!(
+            "[{}]",
+            x.iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        )),
+        blad_meta::Value::Real(x) if x.len() <= CAP => Some(format!(
+            "[{}]",
+            x.iter()
+                .map(|v| format!("{v}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        )),
+        _ => None,
+    }
+}
+
+/// One object per file. Offsets are included because blad already knows them and
+/// nothing else reporting Exif does — it is what lets you check a claim against bytes.
+fn exif_json(path: &Path, r: &blad_meta::Report) -> String {
+    let mut s = String::from("{");
+    s.push_str(&format!(
+        "\"file\":\"{}\",",
+        json_escape(&path.display().to_string())
+    ));
+    s.push_str(&format!("\"file_len\":{},", r.file_len));
+    s.push_str(&format!("\"little_endian\":{},", r.little_endian));
+    s.push_str("\"directories\":[");
+    for (gi, g) in r.groups.iter().enumerate() {
+        if gi > 0 {
+            s.push(',');
+        }
+        s.push_str(&format!(
+            "{{\"kind\":\"{}\",\"offset\":{},\"tags\":[",
+            json_escape(&g.label),
+            g.offset
+        ));
+        for (fi, f) in g.fields.iter().enumerate() {
+            if fi > 0 {
+                s.push(',');
+            }
+            s.push_str(&format!(
+                "{{\"id\":{},\"name\":{},\"type\":\"{}\",\"count\":{},\"offset\":{},\"value\":\"{}\"{}}}",
+                f.tag,
+                match f.name {
+                    Some(n) => format!("\"{n}\""),
+                    None => "null".into(),
+                },
+                blad_meta::value::type_name(f.dtype),
+                f.count,
+                f.offset,
+                json_escape(&f.display),
+                {
+                    let mut extra = String::new();
+                    if !f.redacted {
+                        if let Some(raw) = json_raw(&f.value) {
+                            extra.push_str(&format!(",\"raw\":{raw}"));
+                        }
+                    }
+                    if f.redacted {
+                        extra.push_str(",\"redacted\":true");
+                    }
+                    extra
+                }
+            ));
+        }
+        s.push_str("]}");
+    }
+    s.push_str("]}");
+    s
 }

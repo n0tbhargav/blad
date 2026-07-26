@@ -29,18 +29,18 @@ const MIN_IMAGE_BYTES: u64 = 1 << 20;
 
 /// Bounds on a hostile file. A crafted TIFF can otherwise ask us to allocate wildly or
 /// recurse forever; resource limits are a feature, not an afterthought.
-const MAX_IFDS: usize = 64;
-const MAX_ENTRIES_PER_IFD: u16 = 4096;
-const MAX_VALUES: u64 = 1 << 20;
+pub(crate) const MAX_IFDS: usize = 64;
+pub(crate) const MAX_ENTRIES_PER_IFD: u16 = 4096;
+pub(crate) const MAX_VALUES: u64 = 1 << 20;
 
-struct Reader<'a, R: Read + Seek> {
-    src: &'a mut R,
-    little_endian: bool,
-    file_len: u64,
+pub(crate) struct Reader<'a, R: Read + Seek> {
+    pub(crate) src: &'a mut R,
+    pub(crate) little_endian: bool,
+    pub(crate) file_len: u64,
 }
 
 impl<'a, R: Read + Seek> Reader<'a, R> {
-    fn u16_at(&mut self, off: u64) -> Result<u16> {
+    pub(crate) fn u16_at(&mut self, off: u64) -> Result<u16> {
         let mut b = [0u8; 2];
         self.src.seek(SeekFrom::Start(off))?;
         self.src.read_exact(&mut b)?;
@@ -51,7 +51,7 @@ impl<'a, R: Read + Seek> Reader<'a, R> {
         })
     }
 
-    fn u32_at(&mut self, off: u64) -> Result<u32> {
+    pub(crate) fn u32_at(&mut self, off: u64) -> Result<u32> {
         let mut b = [0u8; 4];
         self.src.seek(SeekFrom::Start(off))?;
         self.src.read_exact(&mut b)?;
@@ -62,7 +62,7 @@ impl<'a, R: Read + Seek> Reader<'a, R> {
         })
     }
 
-    fn bytes_at(&mut self, off: u64, len: usize) -> Result<Vec<u8>> {
+    pub(crate) fn bytes_at(&mut self, off: u64, len: usize) -> Result<Vec<u8>> {
         if off.saturating_add(len as u64) > self.file_len {
             return Err(malformed(format!(
                 "read of {len} bytes at {off} runs past EOF"
@@ -75,7 +75,7 @@ impl<'a, R: Read + Seek> Reader<'a, R> {
     }
 }
 
-fn malformed(detail: String) -> Error {
+pub(crate) fn malformed(detail: String) -> Error {
     Error::Malformed {
         container: "tiff",
         detail,
@@ -83,15 +83,15 @@ fn malformed(detail: String) -> Error {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Entry {
-    tag: u16,
-    dtype: u16,
-    count: u32,
+pub(crate) struct Entry {
+    pub(crate) tag: u16,
+    pub(crate) dtype: u16,
+    pub(crate) count: u32,
     /// Raw contents of the 4-byte value field, unswapped.
-    value_field: [u8; 4],
+    pub(crate) value_field: [u8; 4],
 }
 
-fn type_size(dtype: u16) -> Option<u64> {
+pub(crate) fn type_size(dtype: u16) -> Option<u64> {
     Some(match dtype {
         1 | 2 | 6 | 7 => 1,   // BYTE, ASCII, SBYTE, UNDEFINED
         3 | 8 => 2,           // SHORT, SSHORT
@@ -101,8 +101,8 @@ fn type_size(dtype: u16) -> Option<u64> {
     })
 }
 
-struct Ifd {
-    entries: Vec<Entry>,
+pub(crate) struct Ifd {
+    pub(crate) entries: Vec<Entry>,
 }
 
 impl Ifd {
@@ -170,7 +170,7 @@ impl Ifd {
     }
 }
 
-fn read_ifd<R: Read + Seek>(r: &mut Reader<R>, off: u64) -> Result<Ifd> {
+pub(crate) fn read_ifd<R: Read + Seek>(r: &mut Reader<R>, off: u64) -> Result<Ifd> {
     let count = r.u16_at(off)?;
     if count > MAX_ENTRIES_PER_IFD {
         return Err(malformed(format!("IFD at {off} declares {count} entries")));
