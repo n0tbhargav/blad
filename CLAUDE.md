@@ -417,6 +417,18 @@ metadata fidelity, GPU backend proven to match the CPU path within a stated tole
    Design decisions:
    - **No TUI.** One-shot output that gets piped, grepped and diffed. `--json | jq` is
      the interactive story. No new dependencies: clap + comfy-table.
+   - **Every glyph is East-Asian-Width `Narrow`.** Most decorative Unicode (`▤ ◈ ◐ → •`,
+     and the block-bar characters) is classed **Ambiguous**: terminals configured for CJK
+     render those two columns wide, while `unicode-width` — which comfy-table sizes
+     columns with — counts one. Tables then shift right by a column on exactly the rows
+     that carry a marker, which reads as a data bug rather than a font one. Current set,
+     all verified Narrow: `⊡` main, `⟐` sub, `✱` Exif, `⌖` GPS, `⇄` interop; `!`
+     sensitive, `▪` opaque, `▫` redacted, `↳` pointer, `⊞` matrix, `?` unnamed.
+     **Known remaining exposure:** the `archive` progress bar (`█ ▏ ·`) and the header
+     rule (`─`) are still Ambiguous. They sit in single-purpose columns so the damage is
+     cosmetic, but an `--ascii` escape hatch is the fix if it ever bites.
+   - **Markers flag exceptions only.** An earlier version also marked every value given
+     units — the common case — which is a column of glyphs carrying no information.
    - **Directory-scoped tag lookup.** Tag 1 is `GPSLatitudeRef` under GPS and
      `InteroperabilityIndex` under Interop. A flat table produces confident nonsense.
    - **Never guess, and never hide the gap.** Unknown tag → `Tag(0x8290)` with type and

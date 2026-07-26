@@ -650,27 +650,38 @@ fn cmd_restore(archive: &Path, output: Option<&Path>) -> Result<()> {
 /// Glyphs marking what a row *is*. Colour repeats the same information for people who
 /// read colour faster, but the glyph carries it alone — the output stays legible piped
 /// to a file, on a monochrome terminal, or with NO_COLOR set.
+///
+/// **Every glyph here is East-Asian-Width `Narrow`.** Most decorative Unicode is
+/// classed `Ambiguous`: terminals configured for CJK render those two columns wide
+/// while `unicode-width` — which comfy-table uses to size columns — counts them as one.
+/// The table then shifts right by a column on exactly the rows that have a marker,
+/// which looks like a bug in the data rather than in the font. Narrow glyphs are one
+/// column everywhere, so alignment cannot depend on the reader's terminal.
 fn group_glyph(kind: blad_container::ifd::IfdKind) -> (&'static str, Color) {
     use blad_container::ifd::IfdKind::*;
     match kind {
-        Main(_) => ("▤", Color::Cyan),
-        Sub(_) => ("▨", Color::Magenta),
-        Exif => ("◈", Color::Blue),
-        Gps => ("⌖", Color::Yellow),
-        Interop => ("⇄", Color::DarkGrey),
+        Main(_) => ("\u{22a1}", Color::Cyan), // ⊡ squared dot — the main directory
+        Sub(_) => ("\u{27d0}", Color::Magenta), // ⟐ diamond dot — nested under it
+        Exif => ("\u{2731}", Color::Blue),    // ✱
+        Gps => ("\u{2316}", Color::Yellow),   // ⌖ crosshair
+        Interop => ("\u{21c4}", Color::DarkGrey), // ⇄ exchange
     }
 }
 
+/// Only exceptions get a marker.
+///
+/// An earlier version also marked every value that had been given units, which is the
+/// common case — a column of glyphs down the whole table carries no information and
+/// reads as clutter. What is worth flagging is what you would otherwise misread.
 fn field_glyph(f: &blad_meta::Field) -> (&'static str, Option<Color>) {
     use blad_meta::Kind::*;
     match f.kind {
-        _ if f.redacted => ("•", Some(Color::DarkGrey)),
+        _ if f.redacted => ("\u{25ab}", Some(Color::DarkGrey)), // ▫ hollow: value removed
         _ if f.name.is_none() => ("?", Some(Color::DarkGrey)),
         Sensitive => ("!", Some(Color::Yellow)),
-        Opaque => ("▪", Some(Color::DarkGrey)),
-        Pointer => ("→", Some(Color::Blue)),
-        Matrix3x3 => ("⊞", Some(Color::Magenta)),
-        Seconds | FNumber | Millimetres | Iso => ("◐", Some(Color::Green)),
+        Opaque => ("\u{25aa}", Some(Color::DarkGrey)), // ▪ solid: present, not decoded
+        Pointer => ("\u{21b3}", Some(Color::Blue)),    // ↳ leads to another directory
+        Matrix3x3 => ("\u{229e}", Some(Color::Magenta)), // ⊞
         _ => (" ", None),
     }
 }
