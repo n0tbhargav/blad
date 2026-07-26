@@ -461,9 +461,12 @@ Portability work that survived the CI experiment (worth keeping regardless):
 - `LICENSE-APACHE` and `LICENSE-MIT` added — the manifests had claimed
   `Apache-2.0 OR MIT` since the first commit with no files behind it.
 
-**crates.io note:** 0.0.1 was published before any of the above. crates.io versions are
-immutable and cannot be replaced, so the published 0.0.1 is *older* than the v0.0.1 tag.
-Do not publish again until the next version number; when publishing, bump first.
+**crates.io and the release page are kept on the same version number.** 0.0.1 was
+published to crates.io before the streaming work, the `Frame` refactor and the version
+gate, so for a few hours `cargo install blad` served older code than the release page.
+0.0.2 closes that. Yanking cannot fix this class of drift — a yanked version is still
+downloadable and its number is still spent forever — so the only remedy is to bump and
+publish both channels together. Do that every time.
 
 ### Crate layout
 

@@ -36,7 +36,7 @@ Download from [Releases](https://github.com/n0tbhargav/blad/releases). Verify be
 
 ```console
 $ shasum -a 256 -c SHA256SUMS --ignore-missing
-$ tar -xzf blad-v0.0.1-aarch64-apple-darwin.tar.gz
+$ tar -xzf blad-v0.0.2-aarch64-apple-darwin.tar.gz
 $ xattr -d com.apple.quarantine blad-*/blad     # unsigned; Gatekeeper quarantines it
 $ ./blad-*/blad --version
 ```
