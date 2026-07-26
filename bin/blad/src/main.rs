@@ -770,26 +770,36 @@ fn cmd_exif(
     Ok(())
 }
 
-/// Emoji for a facet. All are East-Asian-Width `Wide`, so they occupy two columns
-/// consistently — unlike most decorative glyphs, which are Ambiguous and misalign on
-/// terminals configured for CJK.
+/// Monochrome glyph and colour for a facet.
+///
+/// Text glyphs rather than emoji: emoji carry their own colour and a typeface the
+/// terminal chose, which fights the palette and looks foreign beside the rest of the
+/// output. A monochrome mark takes its colour from the same ANSI palette as everything
+/// else, and goes plain under `NO_COLOR` instead of staying stubbornly bright.
+///
+/// All are East-Asian-Width `Narrow`, so they occupy one column on every terminal —
+/// unlike the Ambiguous geometric shapes that misaligned tables earlier.
 fn facet_icon(f: blad_meta::summary::Facet) -> (&'static str, Color) {
     use blad_meta::summary::Facet::*;
     match f {
-        Camera => ("\u{1F4F7}", Color::Cyan),       // camera
-        Lens => ("\u{1F52D}", Color::Cyan),         // telescope
-        Shutter => ("\u{1F550}", Color::Green),     // clock
-        Aperture => ("\u{1F506}", Color::Green),    // brightness
-        Iso => ("\u{1F4CA}", Color::Green),         // chart
-        Flash => ("\u{26A1}", Color::Yellow),       // zap
-        Taken => ("\u{1F4C5}", Color::Blue),        // calendar
-        Where => ("\u{1F4CD}", Color::Yellow),      // pin
-        Image => ("\u{1F4D0}", Color::Magenta),     // ruler
-        Colour => ("\u{1F3A8}", Color::Magenta),    // palette
-        Sensor => ("\u{1F52C}", Color::Magenta),    // microscope
-        Orientation => ("\u{1F9ED}", Color::Blue),  // compass
-        Software => ("\u{1F4BE}", Color::DarkGrey), // disk
-        Author => ("\u{1F512}", Color::Yellow),     // lock
+        Camera => ("\u{233E}", Color::Cyan),     // body
+        Lens => ("\u{2300}", Color::Cyan),       // diameter
+        Shutter => ("\u{25F7}", Color::Green),   // elapsed time
+        Aperture => ("\u{229B}", Color::Green),  // iris
+        Iso => ("\u{229A}", Color::Green),       // sensitivity
+        Flash => ("\u{2301}", Color::Yellow),    // arc
+        Taken => ("\u{29D6}", Color::Blue),      // hourglass
+        Where => ("\u{2316}", Color::Yellow),    // crosshair
+        Format => ("\u{2394}", Color::DarkGrey), // container
+        Image => ("\u{25AD}", Color::Magenta),   // frame
+        Aspect => ("\u{2B13}", Color::Magenta),  // proportion
+        Depth => ("\u{25EB}", Color::Magenta),   // bit planes
+        Dynamic => ("\u{25E8}", Color::Magenta), // range
+        Colour => ("\u{2726}", Color::Magenta),
+        Sensor => ("\u{2317}", Color::Blue), // photosite grid
+        Orientation => ("\u{2349}", Color::Blue), // transpose
+        Software => ("\u{2318}", Color::DarkGrey),
+        Author => ("\u{235F}", Color::Yellow),
     }
 }
 
@@ -830,14 +840,7 @@ fn print_summary(path: &Path, report: &blad_meta::Report) {
         } else {
             it.value.clone()
         };
-        println!("  {icon}  {key}  {value}");
-    }
-
-    if blad_meta::summary::has_sensitive(report) {
-        println!(
-            "\n{}",
-            faint("  contains location or identity data \u{2014} --redact to hide it")
-        );
+        println!("  {}  {key}  {value}", colourise(icon, col));
     }
 }
 

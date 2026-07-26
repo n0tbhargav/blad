@@ -478,8 +478,28 @@ metadata fidelity, GPU backend proven to match the CPU path within a stated tole
    relabels Cambridge as London. The distance is always shown once above 5 km, so the
    estimate documents its own reliability.
 
-   Emoji are all East-Asian-Width **Wide**, which is consistent across terminals, unlike
-   the Ambiguous glyphs that caused the earlier alignment problem. Binary grew to 8.0 MB.
+   **Monochrome text glyphs, not emoji.** Emoji were tried and replaced: they carry their
+   own colour and a terminal-chosen typeface, which fights the palette and stays
+   stubbornly bright under `NO_COLOR`. The current marks take colour from the same ANSI
+   palette as everything else. All are East-Asian-Width **Narrow** — one column
+   everywhere — unlike the Ambiguous shapes that caused the earlier alignment bug.
+
+   **Facets: Format, Image, Aspect, Depth, Dynamic** alongside the exposure ones.
+   - Aspect snaps to a conventional ratio within 0.5%: a strict gcd on 8384×6304 gives
+     262:197, which is honest and useless. Anything unconventional gets a decimal rather
+     than an invented ratio.
+   - Format names the container from evidence, not the extension. `Compression = JPEG`
+     on a mosaic is rendered "lossless JPEG (LJ92)" — printing bare "JPEG" beside a
+     container name reads as though the file were a JPEG.
+   - **Dynamic range is inferred and states its evidence.** No tag declares HDR; bit
+     depth, sample format and sensor-linearity do imply the available range.
+     Deliberately **no stop count** — bit depth bounds what can be encoded, the sensor's
+     real range is hardware and appears in no tag, and "16-bit" is not "16 stops".
+
+   Dropped the "contains location or identity data" footer: blad is a tool people point
+   at their own photographs, so warning them about their own metadata is noise.
+
+   Binary grew to 8.0 MB, mostly the city table.
 
    Still excluded: maker notes (opaque), XMP/IPTC internals (opaque), and all *writing*.
 

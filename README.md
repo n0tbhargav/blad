@@ -159,21 +159,37 @@ Effort 1 costs about 5% ratio for a 3× speedup, which is reasonable for bulk wo
 $ blad exif photo.3FR
 ▸ photo.3FR  105.3 MB  ·  51 tags
 
-  📷  Camera    Hasselblad X1D
-  🔭  Lens      45 mm  (35 mm equivalent)
-  🕐  Shutter   1/125 s  ·  shutter priority
-  🔆  Aperture  f/7.1
-  📊  ISO       400
-  📅  Taken     Monday 9 April 2018, 19:23
-  📍  Where     48.8584, 2.2945  ·  Paris, FR
-  📐  Image     8384 × 6304  ·  16-bit  ·  CFA
-  🎨  Colour    camera matrix present
-  🔬  Sensor    black 256  ·  white 65535  ·  crop 8272 × 6200
+  ⌾  Camera    Hasselblad X1D
+  ⌀  Lens      45 mm  (35 mm equivalent)
+  ◷  Shutter   1/125 s  ·  shutter priority
+  ⊛  Aperture  f/7.1
+  ⊚  ISO       400
+  ⧖  Taken     Monday 9 April 2018, 19:23
+  ⌖  Where     48.8584, 2.2945  ·  Paris, FR
+  ⎔  Format    TIFF/EP raw  ·  uncompressed  ·  little-endian
+  ▭  Image     8384 × 6304  ·  52.8 MP
+  ⬓  Aspect    4:3  ·  landscape
+  ◫  Depth     16-bit integer  ·  CFA (Bayer mosaic)
+  ◨  Dynamic   high — 16-bit linear sensor data
+  ✦  Colour    camera matrix present
+  ⌗  Sensor    black 256  ·  white 65535  ·  crop 8272 × 6200
 ```
 
 The default view answers "what is this photo?" — plain-language keys, not tag names,
-because nobody thinks in `ExposureTime` and `FNumber`. `--full` gives every directory
-entry under its standard tag name, as a table, which is the view for debugging a file:
+because nobody thinks in `ExposureTime` and `FNumber`. Glyphs are monochrome text, not
+emoji, so they take their colour from the terminal palette and go quiet under
+`NO_COLOR`; every one is East-Asian-Width Narrow, so the layout cannot shift on a
+terminal configured for CJK.
+
+**Dynamic range is inferred, and says why.** No TIFF or Exif tag declares "this is HDR".
+What a file does state is its bit depth, sample format and whether the data is
+sensor-linear, so blad reports the inference with its evidence — `high — 16-bit linear
+sensor data`, `standard — 8-bit, display-referred`, `floating point — scene-linear,
+unbounded`. Deliberately no stop count: bit depth bounds what can be *encoded*, and the
+sensor's real range is not in any tag.
+
+`--full` gives every directory entry under its standard tag name, as a table, which is
+the view for debugging a file:
 
 ```console
 $ blad exif photo.3FR --full

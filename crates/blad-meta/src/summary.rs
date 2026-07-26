@@ -9,7 +9,7 @@
 //! what order; glyphs and colour are the caller's business, which keeps the library
 //! usable from something that is not a terminal.
 
-use crate::{Kind, Report, Value};
+use crate::{Report, Value};
 use blad_container::ifd::IfdKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +22,11 @@ pub enum Facet {
     Flash,
     Taken,
     Where,
+    Format,
     Image,
+    Aspect,
+    Depth,
+    Dynamic,
     Colour,
     Sensor,
     Orientation,
@@ -42,7 +46,11 @@ impl Facet {
             Facet::Flash => "Flash",
             Facet::Taken => "Taken",
             Facet::Where => "Where",
+            Facet::Format => "Format",
             Facet::Image => "Image",
+            Facet::Aspect => "Aspect",
+            Facet::Depth => "Depth",
+            Facet::Dynamic => "Dynamic",
             Facet::Colour => "Colour",
             Facet::Sensor => "Sensor",
             Facet::Orientation => "Rotation",
@@ -181,6 +189,51 @@ fn coord(r: &Report, value_tag: &str, ref_tag: &str) -> Option<f64> {
     })
 }
 
+/// Reduce a pixel count to the ratio a photographer would name.
+///
+/// A strict gcd gives honest but useless answers — 8384x6304 reduces to 262:197. Sensors
+/// are rarely exact, so we snap to a conventional ratio when within half a percent and
+/// otherwise report the decimal rather than inventing precision.
+pub fn aspect(w: u64, h: u64) -> String {
+    if w == 0 || h == 0 {
+        return String::new();
+    }
+    let (long, short) = if w >= h { (w, h) } else { (h, w) };
+    let r = long as f64 / short as f64;
+    const COMMON: [(u64, u64); 10] = [
+        (1, 1),
+        (5, 4),
+        (4, 3),
+        (7, 5),
+        (3, 2),
+        (16, 10),
+        (5, 3),
+        (16, 9),
+        (2, 1),
+        (21, 9),
+    ];
+    for (a, b) in COMMON {
+        let target = a as f64 / b as f64;
+        if (r - target).abs() / target < 0.005 {
+            return if w >= h {
+                format!("{a}:{b}")
+            } else {
+                format!("{b}:{a}")
+            };
+        }
+    }
+    format!("{r:.2}:1")
+}
+
+fn megapixels(w: u64, h: u64) -> String {
+    let mp = (w * h) as f64 / 1_000_000.0;
+    if mp < 1.0 {
+        String::new()
+    } else {
+        format!("{mp:.1} MP")
+    }
+}
+
 /// Build the compact view. Facets with nothing to say are simply absent.
 pub fn summarise(r: &Report) -> Vec<Item> {
     let mut out: Vec<Item> = Vec::new();
@@ -269,38 +322,113 @@ pub fn summarise(r: &Report) -> Vec<Item> {
     }
 
     // Prefer the SubIFD: on a raw file, IFD0 describes the embedded preview.
-    let w = find_in(r, &[IfdKind::Sub(0), IfdKind::Main(0)], "ImageWidth");
-    let h = find_in(r, &[IfdKind::Sub(0), IfdKind::Main(0)], "ImageLength");
-    if let (Some(w), Some(h)) = (w, h) {
-        let mut parts = vec![format!("{} × {}", w.display, h.display)];
-        if let Some(b) = find_in(r, &[IfdKind::Sub(0), IfdKind::Main(0)], "BitsPerSample") {
-            let bits = b.display.split(',').next().unwrap_or("").trim().to_string();
-            if !bits.is_empty() {
-                parts.push(format!("{bits}-bit"));
+    let pick = |name: &str| find_in(r, &[IfdKind::Sub(0), IfdKind::Main(0)], name);
+    let enum_word = |f: Option<&crate::Field>| -> Option<String> {
+        f.map(|f| f.display.split(" (").next().unwrap_or("").to_string())
+            .filter(|s| !s.is_empty())
+    };
+
+    let width = pick("ImageWidth")
+        .and_then(|f| f.value.as_u64())
+        .or_else(|| find(r, "PixelXDimension").and_then(|f| f.value.as_u64()));
+    let height = pick("ImageLength")
+        .and_then(|f| f.value.as_u64())
+        .or_else(|| find(r, "PixelYDimension").and_then(|f| f.value.as_u64()));
+    let bits = pick("BitsPerSample").and_then(|f| f.value.as_u64());
+    let photometric = enum_word(pick("PhotometricInterpretation"));
+    let compression = enum_word(pick("Compression"));
+    let sample_format = pick("SampleFormat").and_then(|f| f.value.as_u64());
+    let is_raw = photometric
+        .as_deref()
+        .map(|p| p.starts_with("CFA") || p.starts_with("linear raw"))
+        .unwrap_or(false);
+
+    // Container, from evidence rather than from the file name.
+    let mut fmt = Vec::new();
+    if r.tiff_base > 0 {
+        fmt.push("JPEG".to_string());
+    } else if is_raw {
+        fmt.push("TIFF/EP raw".to_string());
+    } else {
+        fmt.push("TIFF".to_string());
+    }
+    if let Some(c) = &compression {
+        // "TIFF/EP raw · JPEG" reads as though the container were JPEG. On a mosaic this
+        // is lossless JPEG — the LJ92 predictive codec, nothing like a baseline JPEG —
+        // and saying so is the difference between confusing and informative.
+        fmt.push(match (c.as_str(), is_raw) {
+            ("JPEG", true) => "lossless JPEG (LJ92)".to_string(),
+            ("uncompressed", _) => c.clone(),
+            (other, _) => format!("{other}-compressed"),
+        });
+    }
+    fmt.push(
+        if r.little_endian {
+            "little-endian"
+        } else {
+            "big-endian"
+        }
+        .to_string(),
+    );
+    push(Facet::Format, fmt.join("  \u{b7}  "), false);
+
+    if let (Some(w), Some(h)) = (width, height) {
+        let mut img = vec![format!("{w} \u{d7} {h}")];
+        let mp = megapixels(w, h);
+        if !mp.is_empty() {
+            img.push(mp);
+        }
+        push(Facet::Image, img.join("  \u{b7}  "), false);
+
+        let a = aspect(w, h);
+        if !a.is_empty() {
+            push(
+                Facet::Aspect,
+                if h > w {
+                    format!("{a}  \u{b7}  portrait")
+                } else if w > h {
+                    format!("{a}  \u{b7}  landscape")
+                } else {
+                    a
+                },
+                false,
+            );
+        }
+    }
+
+    if let Some(b) = bits {
+        let kind = match sample_format {
+            Some(3) => "floating point",
+            Some(2) => "signed integer",
+            _ => "integer",
+        };
+        let mut d = vec![format!("{b}-bit {kind}")];
+        if let Some(p) = &photometric {
+            d.push(p.clone());
+        }
+        push(Facet::Depth, d.join("  \u{b7}  "), false);
+
+        // Dynamic range, stated from evidence only.
+        //
+        // No TIFF or Exif tag declares "this is HDR". What the file *does* say is its
+        // bit depth, sample format and whether the data is sensor-linear, and those
+        // imply the available range. Reporting the inference with its reason is honest;
+        // printing a bare "HDR" would not be.
+        let dynamic = match (sample_format, b, is_raw) {
+            (Some(3), _, _) => Some("floating point \u{2014} scene-linear, unbounded".to_string()),
+            // Deliberately no stop count. Bit depth bounds what the file can *encode*;
+            // the sensor's actual dynamic range is a property of the hardware that no
+            // tag records, and a 16-bit container does not mean 16 stops were captured.
+            (_, b, true) if b >= 12 => Some(format!("high \u{2014} {b}-bit linear sensor data")),
+            (_, b, false) if b >= 16 => {
+                Some(format!("wide \u{2014} {b}-bit, no HDR transfer signalled"))
             }
+            (_, 8, _) => Some("standard \u{2014} 8-bit, display-referred".to_string()),
+            _ => None,
+        };
+        if let Some(d) = dynamic {
+            push(Facet::Dynamic, d, false);
         }
-        if let Some(p) = find_in(
-            r,
-            &[IfdKind::Sub(0), IfdKind::Main(0)],
-            "PhotometricInterpretation",
-        ) {
-            parts.push(p.display.split(" (").next().unwrap_or("").to_string());
-        }
-        if let Some(c) = find_in(r, &[IfdKind::Sub(0), IfdKind::Main(0)], "Compression") {
-            let c = c.display.split(" (").next().unwrap_or("").to_string();
-            if c != "uncompressed" {
-                parts.push(c);
-            }
-        }
-        push(
-            Facet::Image,
-            parts
-                .into_iter()
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
-                .join("  ·  "),
-            false,
-        );
     }
 
     let mut colour = Vec::new();
@@ -357,17 +485,24 @@ pub fn summarise(r: &Report) -> Vec<Item> {
     out
 }
 
-/// Facets whose underlying tags are marked sensitive, for callers that want to warn.
-pub fn has_sensitive(r: &Report) -> bool {
-    r.groups
-        .iter()
-        .flat_map(|g| &g.fields)
-        .any(|f| f.kind == Kind::Sensitive && !f.redacted)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aspect_snaps_to_conventional_ratios() {
+        assert_eq!(aspect(8384, 6304), "4:3"); // not the honest-but-useless 262:197
+        assert_eq!(aspect(6000, 4000), "3:2");
+        assert_eq!(aspect(4000, 6000), "2:3"); // portrait keeps its orientation
+        assert_eq!(aspect(1000, 1000), "1:1");
+        assert_eq!(aspect(1920, 1080), "16:9");
+    }
+
+    /// Anything unconventional gets a decimal rather than an invented ratio.
+    #[test]
+    fn unusual_ratios_are_reported_as_decimals() {
+        assert_eq!(aspect(1000, 337), "2.97:1");
+    }
 
     #[test]
     fn dates_become_human() {
