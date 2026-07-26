@@ -27,15 +27,28 @@
 //!
 //! ```text
 //! thumbnail (JPEG)         FIRST, so the file *is* a valid JPEG
-//! "BLAD" 0x04              magic + format version, after the thumbnail
+//! "BLAD" 0x05              magic + format version, after the thumbnail
 //! body                     segments in file order; verbatim bytes inline,
 //!                          image segments as their encoded parts
-//! manifest (JSON, UTF-8)   self-describing on purpose: archives should stay
-//!                          readable in twenty years without this source code
-//! u32-le manifest_len
-//! u32-le thumb_len         locates the body without decoding the JPEG
-//! 8 bytes                  SHA-256 prefix over the manifest
+//! manifest × 3             JSON, UTF-8, each followed by its own digest
+//! parity section           optional Reed-Solomon; see `blad-parity`
+//! footer × 3               32 bytes each, identical
 //! ```
+//!
+//! The **footer** is 32 bytes: manifest length, thumbnail length, parity offset and
+//! length, the manifest copy count, and an 8-byte SHA-256 prefix over the manifest.
+//!
+//! # Redundancy where a single bit is fatal
+//!
+//! The manifest is a few hundred bytes that make an entire multi-gigabyte body
+//! interpretable, and the footer is the 32 bytes that locate the manifest. Damage
+//! anywhere else costs you a region; damage there costs you everything. Both are
+//! therefore stored three times, which costs about 0.06% of a small archive and rather
+//! less of a large one — the cheapest redundancy in the format by a wide margin.
+//!
+//! Parity is *optional* and off by default. It cannot be free, and inflating every
+//! archive by 6% without being asked would quietly invalidate the compression figures
+//! this project publishes.
 //!
 //! # The thumbnail comes first on purpose
 //!
@@ -62,9 +75,14 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-pub const MAGIC: &[u8; 5] = b"BLAD\x04";
-/// `u32` manifest length + `u32` thumbnail length + an 8-byte digest over the manifest.
-const FOOTER_LEN: u64 = 16;
+pub const MAGIC: &[u8; 5] = b"BLAD\x05";
+/// `u32` manifest_len, `u32` thumb_len, `u64` parity_off, `u32` parity_len,
+/// `u16` manifest_copies, `u16` reserved, 8-byte manifest digest.
+const FOOTER_LEN: u64 = 32;
+/// The footer locates everything else, so losing it loses the archive. Three copies.
+const FOOTER_COPIES: u64 = 3;
+/// Likewise the manifest, which makes the body interpretable.
+const MANIFEST_COPIES: usize = 3;
 /// Bytes of SHA-256 kept to detect manifest corruption. Eight is ample: this guards
 /// against bit rot, not a forgery attempt.
 const MANIFEST_DIGEST_LEN: usize = 8;
@@ -82,6 +100,8 @@ pub enum Error {
     Codec(#[from] blad_codec::Error),
     #[error("manifest: {0}")]
     Manifest(#[from] serde_json::Error),
+    #[error("parity: {0}")]
+    Parity(#[from] blad_parity::Error),
     #[error("not a blad archive")]
     NotAnArchive,
     #[error("archive format version {0} is newer than this build understands (this build writes and reads v{1})")]
@@ -427,25 +447,89 @@ pub fn thumbnail(archive_path: &Path) -> Result<Vec<u8>> {
 /// **Not sufficient on its own to identify an archive.** The lengths are only bounds-
 /// checked, and a file ending in sixteen zero bytes passes — a real Hasselblad 3FR does
 /// exactly that. Use [`is_archive`], which also checks the magic.
-fn read_footer(path: &Path) -> Result<(u64, u64)> {
+#[derive(Debug, Clone, Copy, Default)]
+struct Footer {
+    manifest_len: u64,
+    thumb_len: u64,
+    parity_off: u64,
+    parity_len: u64,
+    manifest_copies: u16,
+    digest: [u8; MANIFEST_DIGEST_LEN],
+}
+
+impl Footer {
+    fn encode(&self) -> [u8; FOOTER_LEN as usize] {
+        let mut b = [0u8; FOOTER_LEN as usize];
+        b[0..4].copy_from_slice(&(self.manifest_len as u32).to_le_bytes());
+        b[4..8].copy_from_slice(&(self.thumb_len as u32).to_le_bytes());
+        b[8..16].copy_from_slice(&self.parity_off.to_le_bytes());
+        b[16..20].copy_from_slice(&(self.parity_len as u32).to_le_bytes());
+        b[20..22].copy_from_slice(&self.manifest_copies.to_le_bytes());
+        b[24..32].copy_from_slice(&self.digest);
+        b
+    }
+
+    fn decode(b: &[u8], total: u64) -> Option<Footer> {
+        if b.len() < FOOTER_LEN as usize {
+            return None;
+        }
+        let u32at = |o: usize| u64::from(u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]));
+        let f = Footer {
+            manifest_len: u32at(0),
+            thumb_len: u32at(4),
+            parity_off: u64::from_le_bytes(b[8..16].try_into().ok()?),
+            parity_len: u32at(16),
+            manifest_copies: u16::from_le_bytes([b[20], b[21]]),
+            digest: b[24..32].try_into().ok()?,
+        };
+        // Bounds, so a footer of zeroes or garbage is rejected before it is trusted.
+        if f.manifest_copies == 0 || f.manifest_copies as usize > 16 {
+            return None;
+        }
+        let tail = FOOTER_LEN * FOOTER_COPIES;
+        let used = f.thumb_len
+            + MAGIC.len() as u64
+            + f.manifest_len * u64::from(f.manifest_copies)
+            + f.parity_len
+            + tail;
+        if used > total {
+            return None;
+        }
+        if f.parity_len > 0 && (f.parity_off < f.thumb_len || f.parity_off + f.parity_len > total) {
+            return None;
+        }
+        Some(f)
+    }
+}
+
+/// Read the footer, trying each copy.
+///
+/// Copies are read newest-first. Any one of them is enough, which is the point: the
+/// footer is 32 bytes that locate everything else, so without redundancy it is the
+/// cheapest possible way to lose an entire archive.
+fn read_footer_full(path: &Path) -> Result<Footer> {
     let mut f = std::fs::File::open(path)?;
     let total = f.metadata()?.len();
-    if total < MAGIC.len() as u64 + FOOTER_LEN {
+    let tail = FOOTER_LEN * FOOTER_COPIES;
+    if total < MAGIC.len() as u64 + tail {
         return Err(Error::NotAnArchive);
     }
-    f.seek(SeekFrom::End(-(FOOTER_LEN as i64)))?;
-    let mut footer = [0u8; FOOTER_LEN as usize];
-    f.read_exact(&mut footer)?;
-    let manifest_len = u64::from(u32::from_le_bytes([
-        footer[0], footer[1], footer[2], footer[3],
-    ]));
-    let thumb_len = u64::from(u32::from_le_bytes([
-        footer[4], footer[5], footer[6], footer[7],
-    ]));
-    if thumb_len + MAGIC.len() as u64 + manifest_len + FOOTER_LEN > total {
-        return Err(Error::NotAnArchive);
+    f.seek(SeekFrom::End(-(tail as i64)))?;
+    let mut buf = vec![0u8; tail as usize];
+    f.read_exact(&mut buf)?;
+
+    for i in (0..FOOTER_COPIES as usize).rev() {
+        let at = i * FOOTER_LEN as usize;
+        if let Some(footer) = Footer::decode(&buf[at..at + FOOTER_LEN as usize], total) {
+            return Ok(footer);
+        }
     }
-    Ok((manifest_len, thumb_len))
+    Err(Error::NotAnArchive)
+}
+
+fn read_footer(path: &Path) -> Result<(u64, u64)> {
+    let f = read_footer_full(path)?;
+    Ok((f.manifest_len, f.thumb_len))
 }
 
 /// Is this one of ours?
@@ -502,6 +586,16 @@ pub fn plan(src: &Path) -> Result<Layout> {
 
 /// Archive `src` to `dst`, then verify by reconstructing and comparing hashes.
 pub fn archive(src: &Path, dst: &Path, codec: &dyn Codec) -> Result<ArchiveReport> {
+    archive_with(src, dst, codec, None)
+}
+
+/// As [`archive`], optionally writing a Reed-Solomon parity section.
+pub fn archive_with(
+    src: &Path,
+    dst: &Path,
+    codec: &dyn Codec,
+    parity: Option<blad_parity::Config>,
+) -> Result<ArchiveReport> {
     let t0 = std::time::Instant::now();
     let (layout, ph_analyze) = blad_mem::measure(|| plan(src));
     let layout = layout?;
@@ -567,12 +661,46 @@ pub fn archive(src: &Path, dst: &Path, codec: &dyn Codec) -> Result<ArchiveRepor
     };
 
     let json = serde_json::to_vec(&manifest)?;
-    out.write_all(&json)?;
-    out.write_all(&(json.len() as u32).to_le_bytes())?;
-    out.write_all(&(thumb.len() as u32).to_le_bytes())?;
-    out.write_all(&Sha256::digest(&json)[..MANIFEST_DIGEST_LEN])?;
+    for _ in 0..MANIFEST_COPIES {
+        out.write_all(&json)?;
+    }
     out.flush()?;
     drop(out);
+
+    let mut footer = Footer {
+        manifest_len: json.len() as u64,
+        thumb_len: thumb.len() as u64,
+        parity_off: 0,
+        parity_len: 0,
+        manifest_copies: MANIFEST_COPIES as u16,
+        digest: Sha256::digest(&json)[..MANIFEST_DIGEST_LEN]
+            .try_into()
+            .expect("digest prefix"),
+    };
+
+    // Parity covers everything written so far — thumbnail, magic, body and every
+    // manifest copy — so a repair can run before anything else is trusted.
+    if let Some(cfg) = parity {
+        let protected_len = std::fs::metadata(dst)?.len();
+        let section = {
+            let mut f = std::io::BufReader::with_capacity(CHUNK, std::fs::File::open(dst)?);
+            blad_parity::encode(&mut f, protected_len, &cfg)?
+        };
+        let mut f = std::fs::OpenOptions::new().append(true).open(dst)?;
+        f.write_all(&section)?;
+        f.flush()?;
+        footer.parity_off = protected_len;
+        footer.parity_len = section.len() as u64;
+    }
+
+    {
+        let mut f = std::fs::OpenOptions::new().append(true).open(dst)?;
+        let bytes = footer.encode();
+        for _ in 0..FOOTER_COPIES {
+            f.write_all(&bytes)?;
+        }
+        f.flush()?;
+    }
     let ph_encode = blad_mem::Phase {
         time: t_encode.elapsed(),
         heap_peak: blad_mem::heap_peak(),
@@ -610,7 +738,8 @@ pub fn archive(src: &Path, dst: &Path, codec: &dyn Codec) -> Result<ArchiveRepor
 /// Read an archive's footer manifest without touching pixel data.
 /// Returns the manifest and the body's `(offset, length)`.
 pub fn read_manifest(path: &Path) -> Result<(Manifest, u64, u64)> {
-    let (json_len, thumb_len) = read_footer(path)?;
+    let foot = read_footer_full(path)?;
+    let (json_len, thumb_len) = (foot.manifest_len, foot.thumb_len);
     let mut f = std::fs::File::open(path)?;
     let total = f.metadata()?.len();
 
@@ -633,34 +762,49 @@ pub fn read_manifest(path: &Path) -> Result<(Manifest, u64, u64)> {
     }
     let body_off = thumb_len + MAGIC.len() as u64;
 
-    let json_off = total
-        .checked_sub(FOOTER_LEN + json_len)
+    // Manifest copies sit consecutively, ending where the parity section (or the
+    // footers) begins. Each is checked against the footer's digest and the first intact
+    // one wins, so losing any two of three is survivable.
+    let copies = u64::from(foot.manifest_copies);
+    let manifests_end = if foot.parity_len > 0 {
+        foot.parity_off
+    } else {
+        total - FOOTER_LEN * FOOTER_COPIES
+    };
+    let first_off = manifests_end
+        .checked_sub(json_len * copies)
         .ok_or_else(|| Error::Corrupt("manifest length exceeds file size".into()))?;
-    if json_off < body_off {
+    if first_off < body_off {
         return Err(Error::Corrupt("manifest overlaps body".into()));
     }
 
-    f.seek(SeekFrom::Start(json_off))?;
-    let mut json = vec![0u8; json_len as usize];
-    f.read_exact(&mut json)
-        .map_err(|_| Error::Corrupt("manifest truncated".into()))?;
-
-    // Check the manifest before parsing it. Serde would reject scrambled JSON anyway,
-    // but a flipped bit inside a *number* stays valid JSON and would silently give
-    // wrong offsets — the failure that looks like a codec bug and is not.
-    f.seek(SeekFrom::End(-(FOOTER_LEN as i64) + 8))?;
-    let mut want = [0u8; MANIFEST_DIGEST_LEN];
-    f.read_exact(&mut want)?;
-    if Sha256::digest(&json)[..MANIFEST_DIGEST_LEN] != want {
+    // Check before parsing. Serde would reject scrambled JSON anyway, but a flipped bit
+    // inside a *number* stays valid JSON and would silently give wrong offsets — the
+    // failure that looks like a codec bug and is not.
+    let mut json = Vec::new();
+    let mut found = false;
+    for c in 0..copies {
+        let mut buf = vec![0u8; json_len as usize];
+        f.seek(SeekFrom::Start(first_off + c * json_len))?;
+        if f.read_exact(&mut buf).is_err() {
+            continue;
+        }
+        if Sha256::digest(&buf)[..MANIFEST_DIGEST_LEN] == foot.digest {
+            json = buf;
+            found = true;
+            break;
+        }
+    }
+    if !found {
         return Err(Error::Corrupt(
-            "manifest failed its own checksum; the archive index is damaged".into(),
+            "every manifest copy failed its checksum; the archive index is damaged".into(),
         ));
     }
 
     let manifest: Manifest = serde_json::from_slice(&json)?;
     manifest.layout.validate()?;
 
-    Ok((manifest, body_off, json_off - body_off))
+    Ok((manifest, body_off, first_off - body_off))
 }
 
 /// Stream the original file out of an archive, returning its length and SHA-256.
@@ -1228,6 +1372,135 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Two of three copies destroyed and the archive still reads. The manifest is a few
+    /// hundred bytes that make gigabytes interpretable, so this is the cheapest
+    /// redundancy in the format.
+    #[test]
+    fn survives_losing_all_but_one_manifest_copy() {
+        let dir = tmp();
+        let src = dir.join("a.tif");
+        let arc = dir.join("a.blad");
+        let bytes = synth_tiff(1024, 1024, 3, 2, 61);
+        std::fs::write(&src, &bytes).unwrap();
+        archive(&src, &arc, &Identity).unwrap();
+
+        let foot = read_footer_full(&arc).unwrap();
+        assert_eq!(foot.manifest_copies as usize, MANIFEST_COPIES);
+        let total = std::fs::metadata(&arc).unwrap().len();
+        let first = total - FOOTER_LEN * FOOTER_COPIES - foot.manifest_len * 3;
+
+        let mut raw = std::fs::read(&arc).unwrap();
+        for c in 0..2u64 {
+            let at = (first + c * foot.manifest_len) as usize;
+            for b in raw.iter_mut().skip(at).take(foot.manifest_len as usize) {
+                *b = 0xAA;
+            }
+        }
+        std::fs::write(&arc, &raw).unwrap();
+
+        let out = dir.join("a.out");
+        restore(&arc, &out, &Identity).unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), bytes);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The footer is the 32 bytes that locate everything else.
+    #[test]
+    fn survives_losing_all_but_one_footer_copy() {
+        let dir = tmp();
+        let src = dir.join("b.tif");
+        let arc = dir.join("b.blad");
+        let bytes = synth_tiff(1024, 1024, 3, 2, 62);
+        std::fs::write(&src, &bytes).unwrap();
+        archive(&src, &arc, &Identity).unwrap();
+
+        let mut raw = std::fs::read(&arc).unwrap();
+        let n = raw.len();
+        for b in raw.iter_mut().skip(n - 64) {
+            *b = 0;
+        }
+        std::fs::write(&arc, &raw).unwrap();
+
+        let out = dir.join("b.out");
+        restore(&arc, &out, &Identity).unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), bytes);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Parity repairs lost sectors and the archive comes back byte-identical — not
+    /// merely restorable, but the same bytes it was before the damage.
+    #[test]
+    fn parity_repairs_lost_sectors_byte_exactly() {
+        let dir = tmp();
+        let src = dir.join("c.tif");
+        let arc = dir.join("c.blad");
+        let bytes = synth_tiff(2048, 2048, 3, 2, 63);
+        std::fs::write(&src, &bytes).unwrap();
+        let cfg = blad_parity::Config {
+            data_shards: 8,
+            parity_shards: 2,
+            shard_size: 4096,
+        };
+        archive_with(&src, &arc, &Identity, Some(cfg)).unwrap();
+
+        let good = std::fs::read(&arc).unwrap();
+        let mut broken = good.clone();
+        // Two sectors far apart, so they land in different stripes.
+        for at in [4096usize, good.len() / 2] {
+            for b in broken.iter_mut().skip(at).take(4096) {
+                *b = 0;
+            }
+        }
+        std::fs::write(&arc, &broken).unwrap();
+        assert!(restore(&arc, &dir.join("c.bad"), &Identity).is_err());
+
+        let r = repair(&arc, true).unwrap();
+        assert!(r.has_parity);
+        assert_eq!(r.repaired, r.damaged);
+        assert_eq!(
+            std::fs::read(&arc).unwrap(),
+            good,
+            "repair was not byte-exact"
+        );
+
+        let out = dir.join("c.out");
+        restore(&arc, &out, &Identity).unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), bytes);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Damage beyond capacity must be refused in *both* modes. A dry run that says
+    /// "repairable" and then fails is worse than one that says nothing.
+    #[test]
+    fn damage_beyond_parity_is_refused_in_dry_run_too() {
+        let dir = tmp();
+        let src = dir.join("d.tif");
+        let arc = dir.join("d.blad");
+        std::fs::write(&src, synth_tiff(1024, 1024, 3, 2, 64)).unwrap();
+        let cfg = blad_parity::Config {
+            data_shards: 8,
+            parity_shards: 1,
+            shard_size: 4096,
+        };
+        archive_with(&src, &arc, &Identity, Some(cfg)).unwrap();
+
+        let mut raw = std::fs::read(&arc).unwrap();
+        // Three shards in the first stripe, against one parity shard.
+        for at in [0usize, 4096, 8192] {
+            for b in raw.iter_mut().skip(at + 100).take(64) {
+                *b ^= 0xFF;
+            }
+        }
+        std::fs::write(&arc, &raw).unwrap();
+
+        assert!(
+            repair(&arc, false).is_err(),
+            "dry run claimed it was repairable"
+        );
+        assert!(repair(&arc, true).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// A raw with no embedded preview has nothing to make a thumbnail from. That must
     /// degrade to an empty thumbnail, never to a failed archive.
     #[test]
@@ -1256,9 +1529,15 @@ mod tests {
         std::fs::write(&src, synth_tiff(512, 700, 3, 2, 31)).unwrap();
         archive(&src, &arc, &Identity).unwrap();
 
+        // Every copy, since one damaged copy is now recoverable from the others.
+        let foot = read_footer_full(&arc).unwrap();
         let mut data = std::fs::read(&arc).unwrap();
-        let n = data.len();
-        data[n - 40] ^= 0xFF; // inside the manifest JSON
+        let n = data.len() as u64;
+        let first = (n - FOOTER_LEN * FOOTER_COPIES - foot.manifest_len * 3) as usize;
+        let span = (foot.manifest_len * 3) as usize;
+        for b in data.iter_mut().skip(first).take(span) {
+            *b ^= 0xFF;
+        }
         std::fs::write(&arc, &data).unwrap();
 
         assert!(read_manifest(&arc).is_err(), "manifest must be rejected");
@@ -1326,4 +1605,52 @@ mod tests {
         assert_eq!(l.payload_len(), 1024 * 1024 * 2);
         std::fs::remove_dir_all(&dir).ok();
     }
+}
+
+/// What a [`repair`] run found and fixed.
+#[derive(Debug, Clone, Default)]
+pub struct RepairReport {
+    pub has_parity: bool,
+    pub damaged: usize,
+    pub repaired: usize,
+    pub repairable: bool,
+    pub shard_size: usize,
+    pub coverage_percent: f64,
+}
+
+/// Check an archive against its parity section, optionally rewriting damaged shards.
+///
+/// Repair happens **in place**, which is only defensible because every rewritten shard
+/// is checked against its stored CRC before being written, and because the archive is
+/// verified afterwards. Nothing is written unless the reconstruction is provably right.
+pub fn repair(archive_path: &Path, apply: bool) -> Result<RepairReport> {
+    let foot = read_footer_full(archive_path)?;
+    if foot.parity_len == 0 {
+        return Ok(RepairReport::default());
+    }
+
+    let mut f = std::fs::File::open(archive_path)?;
+    f.seek(SeekFrom::Start(foot.parity_off))?;
+    let mut section = vec![0u8; foot.parity_len as usize];
+    f.read_exact(&mut section)
+        .map_err(|_| Error::Corrupt("parity section truncated".into()))?;
+    drop(f);
+
+    let parsed = blad_parity::parse_section(&section)?;
+    let cfg = parsed.cfg;
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(apply)
+        .open(archive_path)?;
+    let report = blad_parity::check(&mut file, &parsed, &section, apply)?;
+
+    Ok(RepairReport {
+        has_parity: true,
+        damaged: report.damaged.len(),
+        repaired: report.repaired.len(),
+        repairable: true,
+        shard_size: cfg.shard_size,
+        coverage_percent: cfg.overhead_percent(),
+    })
 }

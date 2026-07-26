@@ -26,7 +26,7 @@ lossless", not "same pixels, new container" — the same SHA-256.
 > **Pre-release. Don't use blad as your only copy of anything.**
 > The archive format is not frozen — it has changed four times — and blad refuses to
 > read archives written by a different format version. There is no error-correcting
-> parity, so corruption is detected but not repaired. See [Stability](#stability).
+> parity unless you ask for `--parity`. See [Stability](#stability).
 
 ## Install
 
@@ -120,6 +120,10 @@ An archival format that can't prove itself isn't archival.
 - `verify` reconstructs fully, proving the decode path still works.
 - `restore` writes to a `.part` file and renames only after the hash matches, so an
   interrupted restore can never leave something that looks like your original.
+- The **manifest and footer are stored three times**. They are a few hundred bytes that
+  make gigabytes interpretable, so damage there costs you everything while damage
+  elsewhere costs you a region. Two of three copies can be destroyed and the archive
+  still reads.
 - The manifest carries its own digest, checked *before* the JSON is parsed. A flipped bit
   inside a manifest number stays valid JSON and would otherwise yield silently wrong
   offsets.
@@ -130,6 +134,7 @@ An archival format that can't prove itself isn't archival.
 blad archive <files>...      compress, verified on write
   --dry-run                  show what would be compressed, encode nothing
   --effort <1-10>            default 4; see the note below
+  --parity <percent>         Reed-Solomon recovery data; off by default
   --stats                    per-phase time, throughput, heap and RSS
   --json                     one JSON object per file, for benchmarking
 
@@ -137,6 +142,9 @@ blad verify <archives>...    prove an archive still restores
   --quick                    checksum stored bytes only, no decode
 
 blad restore <archive>       write the original back out
+
+blad repair <archives>...    rebuild damaged blocks from parity
+  --dry-run                  report damage without writing
 
 blad exif <files>...         read metadata — TIFF, raw, JPEG, or a blad archive
   -f, --full                 every tag, as a table (default is a compact summary)
@@ -266,6 +274,36 @@ archive silently overwritten.
 The thumbnail comes from the camera's embedded preview where one exists, downscaled in
 **linear light** (averaging gamma-encoded values darkens detail) and rotated per the
 orientation tag, so portrait frames are not shown sideways.
+
+## Repairing bit rot
+
+Detection is not repair. With `--parity`, an archive carries Reed-Solomon recovery data
+and damaged blocks can be rebuilt in place:
+
+```console
+$ blad archive photo.3FR --parity 6      # ~6% larger
+$ blad repair photo.blad.3FR
+ archive          parity  damage               result
+ photo.blad.3FR   6.2%    2 block(s), 64.0 KB  repaired 2
+```
+
+Verified end to end: zero two sectors in an archive, `restore` fails, `repair` rebuilds
+it **byte-identically**, and the original then restores byte-identically too.
+
+Every 64 KB block carries a CRC32, so damage is *located* rather than merely detected.
+That matters more than the choice of code: Reed-Solomon fixes *t* erasures of known
+position with *t* parity blocks but needs *2t* for errors of unknown position, so
+locating the damage halves the cost of the same protection.
+
+**What it can and cannot do.** Any damage confined to `parity` blocks of a stripe is
+repairable — scattered sector failures, or a contiguous burst up to roughly
+`parity × 64 KB`. A larger burst inside one stripe is not, and neither is a dead drive.
+`blad repair --dry-run` says which case you are in before writing anything, and refuses
+to claim a repair it cannot make.
+
+Parity is **off by default**: it cannot be free, and inflating every archive by 6%
+unasked would quietly invalidate the compression figures above. Parity protects a copy;
+it does not replace one.
 
 ## Scope, honestly
 

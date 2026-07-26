@@ -15,6 +15,7 @@ blad-archive.workspace = true
 blad-codec.workspace = true
 blad-container.workspace = true
 blad-meta.workspace = true
+blad-parity.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 comfy-table.workspace = true

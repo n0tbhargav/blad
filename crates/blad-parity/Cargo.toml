@@ -1,0 +1,11 @@
+[package]
+name = "blad-parity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reed-Solomon parity for blad archives"
+
+[dependencies]
+thiserror.workspace = true
+reed-solomon-erasure.workspace = true

@@ -253,9 +253,9 @@ without measuring on both CFA and RGB.**
    an LZW TIFF archives at 1.000 — measured. Modelling an existing compressed bitstream
    byte-exactly is the Lepton-class problem, solved so far only for JPEG (by libjxl).
    blad trades that depth for breadth.
-3. **No parity/error correction.** `verify --quick` detects bit rot at I/O speed, but
-   corruption can be neither located nor repaired.
-4. **The manifest itself is not checksummed, and exists in one copy.** Both hashes
+3. ~~**No parity/error correction.**~~ **Done — format v5.** See the note below.
+4. ~~**The manifest itself is not checksummed, and exists in one copy.**~~ **Done.**
+   Original text follows for the record. Both hashes
    (`original.sha256`, `body_sha256`) live in the JSON footer, so a single flipped bit
    there makes the whole archive unreadable even when the body is perfect. Real archival
    formats replicate or checksum their directory. Cheap to fix now, painful once
@@ -640,6 +640,51 @@ gate, so for a few hours `cargo install blad` served older code than the release
 0.0.2 closes that. Yanking cannot fix this class of drift — a yanked version is still
 downloadable and its number is still spent forever — so the only remedy is to bump and
 publish both channels together. Do that every time.
+
+### Durability: format v5 (2026-07-25)
+
+Measured first. Flipping single bits in a v4 archive showed detection was complete and
+correction absent: a damaged body failed `verify --quick` and `restore` refused to write
+output; a damaged manifest or footer reported "archive index is damaged"; a damaged
+thumbnail went unnoticed but cost nothing, since the preview is not part of
+reconstruction. **Fail-safe, never fault-tolerant** — one flipped bit and the data was
+gone. JPEG XL is entropy-coded, so a flipped bit does not spoil a pixel, it
+desynchronises the decoder and destroys everything after it.
+
+**Replication for the parts where one bit is fatal.** The manifest (~600 B) makes
+gigabytes interpretable and the footer (32 B) locates the manifest. Both are now written
+three times, and the reader tries each. Cost ~0.06% on a 1 MB archive and far less on a
+real one — the cheapest redundancy in the format by a wide margin. Tested by destroying
+two of three copies of each.
+
+**Reed-Solomon parity, opt-in via `--parity <percent>`.** `blad-parity` +
+`blad repair`. Design notes:
+
+- **Erasures, not errors.** RS fixes *t* erasures of known position with *t* parity
+  symbols but needs *2t* for errors of unknown position, so a CRC32 per 64 KB shard —
+  which *locates* damage — halves the cost of the same protection. That decision matters
+  more than the choice of code, and it is what PAR2 does too.
+- **Is RS best in class?** For this problem, effectively yes: it is MDS, so *m* parity
+  shards recover any *m* lost shards and nothing beats that on overhead. LDPC wins on
+  noisy channels with soft-decision information, which a disk does not provide; LRC wins
+  on distributed-cluster repair traffic, which we do not have; RaptorQ wins when the
+  erasure rate is unknown, which it is not.
+- **Stripes, not interleaving.** Interleaving survives larger bursts but needs the whole
+  file resident or a strided second pass, and peak RSS is a number this project
+  publishes. Stripes encode in one sequential pass holding ~2 MB.
+- **The parity section is self-describing and its header is stored twice.** A scheme
+  whose metadata lives in the structure it protects is circular — the manifest is
+  precisely what you need parity for — so `repair` never reads the manifest.
+- **Scan is separate from repair.** The first version reported "repairable" in
+  `--dry-run` and then failed, because it checked capacity per stripe only on the repair
+  path. A dry run that lies is worse than no dry run.
+
+Verified: zero two sectors of a real archive, `restore` fails, `repair` restores the
+archive **byte-identically**, and the original then restores byte-identically.
+
+**Off by default**, because 6% is not free and silently inflating every archive would
+invalidate the published ratios. Stated plainly in the README: parity protects a copy,
+it does not replace one — for an archival tool a second copy beats any ECC scheme.
 
 ### Crate layout
 

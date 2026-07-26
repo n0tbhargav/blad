@@ -46,6 +46,10 @@ enum Command {
         /// effort 9 measured larger than 7 and 36x slower than 4.
         #[arg(short, long, default_value_t = 4)]
         effort: u8,
+        /// Reed-Solomon parity, as a percentage of archive size. Repairs bit rot in
+        /// place; costs that much space. Off by default.
+        #[arg(long, value_name = "PERCENT")]
+        parity: Option<u32>,
         /// Show what would be compressed, without encoding anything.
         #[arg(long)]
         dry_run: bool,
@@ -83,6 +87,14 @@ enum Command {
         /// Output path, or `-` for stdout (default: <archive>.jpg).
         #[arg(short, long)]
         output: Option<PathBuf>,
+    },
+    /// Check an archive against its parity and repair damaged blocks.
+    Repair {
+        #[arg(required = true)]
+        archives: Vec<PathBuf>,
+        /// Report damage without writing anything.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Read Exif, TIFF and DNG metadata.
     Exif {
@@ -124,13 +136,23 @@ fn main() -> Result<()> {
             inputs,
             output,
             effort,
+            parity,
             dry_run,
             stats,
             json,
-        } => cmd_archive(&inputs, output.as_deref(), effort, dry_run, stats, json),
+        } => cmd_archive(
+            &inputs,
+            output.as_deref(),
+            effort,
+            parity,
+            dry_run,
+            stats,
+            json,
+        ),
         Command::Verify { archives, quick } => cmd_verify(&archives, quick),
         Command::Restore { archive, output } => cmd_restore(&archive, output.as_deref()),
         Command::Thumb { archive, output } => cmd_thumb(&archive, output.as_deref()),
+        Command::Repair { archives, dry_run } => cmd_repair(&archives, dry_run),
         Command::Exif {
             files,
             group,
@@ -415,10 +437,12 @@ fn json_line(input: &Path, r: &blad_archive::ArchiveReport, effort: u8) -> Strin
     .to_string()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_archive(
     inputs: &[PathBuf],
     output: Option<&Path>,
     effort: u8,
+    parity: Option<u32>,
     dry_run: bool,
     stats: bool,
     json: bool,
@@ -453,7 +477,14 @@ fn cmd_archive(
         let dst = output
             .map(PathBuf::from)
             .unwrap_or_else(|| archive_name(input));
-        match blad_archive::archive(input, &dst, &c) {
+        let parity_cfg = match parity {
+            Some(pct) => match blad_parity::Config::for_percent(pct) {
+                Some(c) => Some(c),
+                None => bail!("--parity {pct} would buy no recovery shards; use 1 or more"),
+            },
+            None => None,
+        };
+        match blad_archive::archive_with(input, &dst, &c, parity_cfg) {
             Ok(r) => {
                 total_in += r.original_len;
                 total_out += r.stored_len;
@@ -1157,4 +1188,69 @@ fn exif_json(path: &Path, r: &blad_meta::Report) -> String {
     }
     s.push_str("]}");
     s
+}
+
+fn cmd_repair(archives: &[PathBuf], dry_run: bool) -> Result<()> {
+    let mut t = table();
+    t.set_header(vec![
+        dim(Cell::new("archive")),
+        dim(Cell::new("parity")),
+        dim(Cell::new("damage")),
+        dim(Cell::new("result")),
+    ]);
+    let mut failed = 0usize;
+
+    for a in archives {
+        let name = a
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        match blad_archive::repair(a, !dry_run) {
+            Ok(r) if !r.has_parity => {
+                t.add_row(vec![
+                    Cell::new(name),
+                    dim(Cell::new("none")),
+                    dim(Cell::new("—")),
+                    dim(Cell::new("cannot repair; archive has no parity")),
+                ]);
+            }
+            Ok(r) if r.damaged == 0 => {
+                t.add_row(vec![
+                    Cell::new(name),
+                    dim(Cell::new(format!("{:.1}%", r.coverage_percent))),
+                    dim(Cell::new("none")),
+                    green(Cell::new("clean")),
+                ]);
+            }
+            Ok(r) => {
+                let what = format!("{} block(s), {}", r.damaged, human(r.shard_size as u64));
+                let outcome = if dry_run {
+                    dim(Cell::new("repairable; re-run without --dry-run"))
+                } else {
+                    green(Cell::new(format!("repaired {}", r.repaired)))
+                };
+                t.add_row(vec![
+                    Cell::new(name),
+                    dim(Cell::new(format!("{:.1}%", r.coverage_percent))),
+                    paint(Cell::new(what), Color::Yellow),
+                    outcome,
+                ]);
+            }
+            Err(e) => {
+                failed += 1;
+                t.add_row(vec![
+                    Cell::new(name),
+                    dim(Cell::new("—")),
+                    paint(Cell::new("beyond repair"), Color::Red),
+                    paint(Cell::new(e.to_string()), Color::Red),
+                ]);
+            }
+        }
+    }
+    println!("{t}");
+    if failed > 0 {
+        bail!("{failed} archive(s) could not be repaired");
+    }
+    Ok(())
 }
