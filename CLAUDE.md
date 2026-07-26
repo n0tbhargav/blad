@@ -377,25 +377,26 @@ metadata fidelity, GPU backend proven to match the CPU path within a stated tole
    - **Orientation is applied.** The X1D writes tag 274 = 8 and stores its preview
      landscape; without this every portrait photo shows up sideways in Finder. Caught by
      looking at the output image, not by a passing test.
-4. ~~OS thumbnail integration.~~ **Done for macOS, and far cheaper than planned.**
+4. **OS thumbnail integration — attempted, then dropped.**
 
-   The original plan — a Quick Look extension in Swift, inside a signed `.app` — was
-   unnecessary. **Format v4 puts the JPEG at offset 0**, so an archive *is* a valid JPEG
-   (decoders stop at `FFD9` and ignore trailing bytes). Declaring the file type as
-   conforming to `public.jpeg` then makes Finder, Quick Look, Spotlight and Preview
-   render previews with Apple's decoder. No plugin, no Swift, no code signing, nothing
-   for us to maintain.
+   Format v4 makes an archive a valid JPEG (thumbnail at offset 0; decoders stop at
+   `FFD9`), which *does* let Apple's ImageIO decode it: `sips` reads a 56 MB archive as
+   384x512 without complaint. Quick Look renders it at every icon size.
 
-   `scripts/install-macos.sh` writes a bundle containing a plist and a stub — the bundle
-   exists only because UTI declarations must live in one — then registers it and
-   *verifies* against a real archive rather than assuming success. Confirmed with
-   `qlmanage`: type recognised, preview rendered.
+   But macOS resolves file types by **extension**, not content, so it still needs a UTI
+   declaration saying `.blad` conforms to `public.jpeg` — and UTI declarations must live
+   in an app bundle. We built one (plist + stub, no code), and hit two walls:
+   `CFBundleDocumentTypes` was required as well or Finder drew its "no handler" icon, and
+   `lsregister` still marked the declaration **untrusted** because ad-hoc signing is not
+   a Developer ID. Finder icons stayed generic.
 
-   Cost: `file` reports "JPEG image data", and Preview opens the thumbnail instead of
-   erroring. For a preview-carrying archive that seems reasonable.
+   **Removed.** The plist scaffolding was not worth carrying for an icon. The format
+   change stays — it costs nothing, `blad thumb` works, and it leaves the door open.
 
-   Windows (`IThumbnailProvider`) and Linux (`.thumbnailer`) remain, though Linux file
-   managers that sniff content may already work.
+   Worth knowing: **Hasselblad does nothing here.** Phocus ships no Quick Look plugin;
+   macOS has *built-in* RAW support and lists Hasselblad X1D-50c among its known cameras.
+   That path is Apple's and is not open to third parties at any price.
+
 5. **`blad exif`** — read standard TIFF/Exif/GPS IFDs. The IFD walker already exists;
    what is missing is a tag dictionary and type-aware formatting. Explicitly excluded
    from v1: maker notes (pass through opaquely) and *writing* metadata.

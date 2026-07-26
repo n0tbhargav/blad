@@ -97,24 +97,6 @@ libjxl is vendored and statically linked, so the resulting binary depends only o
 platform C/C++ runtime — nothing to install alongside it. Building from source does
 require **cmake** and a C++ toolchain, since libjxl is compiled from source.
 
-## Finder previews on macOS
-
-```
-./scripts/install-macos.sh path/to/some.blad
-```
-
-A blad archive **is a valid JPEG**: it opens with a complete thumbnail, and JPEG decoders
-stop at the end marker and ignore the archive that follows. So macOS needs no plugin from
-us — only to be told that `.blad` is a kind of JPEG. Finder, Quick Look, Spotlight and
-Preview then render previews with Apple's own decoder.
-
-The script installs a bundle containing a plist and a stub, with no code. Remove it with
-`./scripts/install-macos.sh --uninstall`.
-
-Thumbnails are built from the camera's embedded preview where one exists, downscaled in
-**linear light** (averaging gamma-encoded values darkens detail) and rotated according to
-the orientation tag, so portrait frames are not shown on their side.
-
 ## Usage
 
 ```
@@ -130,6 +112,12 @@ blad verify <archives>...    prove an archive still restores
 blad restore <archive>       write the original back out
 blad thumb <archive>         extract the embedded preview as a JPEG
 ```
+
+An archive opens with a complete JPEG thumbnail — decoders stop at the end marker and
+ignore the archive behind it — so anything that reads JPEG can show a preview of a blad
+file. The thumbnail is built from the camera's embedded preview where one exists,
+downscaled in **linear light** (averaging gamma-encoded values darkens detail) and
+rotated per the orientation tag, so portrait frames are not shown sideways.
 
 **Effort is non-monotonic.** Higher is not reliably smaller: on Bayer planes effort 7
 encoded *larger* than effort 4 and took 3.8× longer; on a 51MP RGB frame effort 9 was
