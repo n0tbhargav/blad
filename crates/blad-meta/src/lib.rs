@@ -76,8 +76,13 @@ impl Field {
         }
     }
 
+    /// Type and element count, e.g. `RATIONAL[9]`.
+    ///
+    /// Bracket notation rather than `×`: this string lands in an aligned table column,
+    /// and the multiplication sign is East-Asian-Width Ambiguous, so a terminal
+    /// configured for CJK renders it two columns wide and shifts the row.
     pub fn type_note(&self) -> String {
-        format!("{} × {}", value::type_name(self.dtype), self.count)
+        format!("{}[{}]", value::type_name(self.dtype), self.count)
     }
 }
 

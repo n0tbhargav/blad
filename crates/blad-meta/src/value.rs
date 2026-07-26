@@ -220,7 +220,7 @@ pub fn render(v: &Value, max_items: usize) -> String {
     fn join<T: std::fmt::Display>(items: &[T], max: usize) -> String {
         let shown: Vec<String> = items.iter().take(max).map(|x| x.to_string()).collect();
         if items.len() > max {
-            format!("{} … ({} values)", shown.join(", "), items.len())
+            format!("{} ⋯ ({} values)", shown.join(", "), items.len())
         } else {
             shown.join(", ")
         }
@@ -242,7 +242,7 @@ pub fn render(v: &Value, max_items: usize) -> String {
                 })
                 .collect();
             if x.len() > max_items {
-                format!("{} … ({} values)", s.join(", "), x.len())
+                format!("{} ⋯ ({} values)", s.join(", "), x.len())
             } else {
                 s.join(", ")
             }
@@ -254,7 +254,7 @@ pub fn render(v: &Value, max_items: usize) -> String {
                 .map(|&(n, d)| fmt_rational(n, d))
                 .collect();
             if x.len() > max_items {
-                format!("{} … ({} values)", s.join(", "), x.len())
+                format!("{} ⋯ ({} values)", s.join(", "), x.len())
             } else {
                 s.join(", ")
             }
@@ -342,7 +342,7 @@ mod tests {
         let b: Vec<u8> = (0..40u8).collect();
         let v = decode(&entry(BYTE, 40, &b), true);
         let s = render(&v, 4);
-        assert!(s.ends_with("… (40 values)"), "{s}");
+        assert!(s.ends_with("⋯ (40 values)"), "{s}");
     }
 
     #[test]

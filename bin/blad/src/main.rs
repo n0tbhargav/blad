@@ -321,7 +321,7 @@ fn print_layout(input: &Path, layout: &Layout) {
         );
     }
     println!(
-        "  {} total · {} compressible ({pct:.1}%) · {} verbatim",
+        "  {} total \u{2219} {} compressible ({pct:.1}%) \u{2219} {} verbatim",
         human(layout.total_len),
         human(layout.payload_len()),
         human(layout.skeleton_len()),
@@ -813,7 +813,7 @@ fn print_summary(path: &Path, report: &blad_meta::Report) {
     // occupies 167 MB on disk, so both are named.
     let size = match report.archived {
         Some(on_disk) => format!(
-            "{} archive  \u{00b7}  {} original",
+            "{} archive{SEPARATOR}{} original",
             human(on_disk),
             human(report.file_len)
         ),
@@ -822,7 +822,7 @@ fn print_summary(path: &Path, report: &blad_meta::Report) {
     println!(
         "{}  {}",
         bold(&format!("\u{25B8} {name}")),
-        faint(&format!("{size}  \u{00b7}  {} tags", report.field_count()))
+        faint(&format!("{size}{SEPARATOR}{} tags", report.field_count()))
     );
 
     if items.is_empty() {
@@ -840,16 +840,33 @@ fn print_summary(path: &Path, report: &blad_meta::Report) {
     for it in &items {
         let (icon, col) = facet_icon(it.facet);
         let key = colourise(&format!("{:<width$}", it.facet.key(), width = width), col);
-        let value = if it.sensitive && !it.value.starts_with('<') {
-            colourise(&it.value, Color::Yellow)
-        } else if it.value.starts_with('<') {
-            faint(&it.value)
-        } else {
-            it.value.clone()
-        };
+
+        // The answer at full strength, its qualifications receding. Separators are dim
+        // so they organise without competing; a row of bright dots between every field
+        // is the same clutter as a column of glyphs marking the common case.
+        let mut value = String::new();
+        for (i, part) in it.parts.iter().enumerate() {
+            if i > 0 {
+                value.push_str(&faint(SEPARATOR));
+            }
+            let redacted = part.starts_with('<');
+            value.push_str(&match (i, it.sensitive, redacted) {
+                (_, _, true) => faint(part),
+                (0, true, _) => colourise(part, Color::Yellow),
+                (0, _, _) => part.clone(),
+                _ => faint(part),
+            });
+        }
         println!("  {}  {key}  {value}", colourise(icon, col));
     }
 }
+
+/// Between a value and its qualifiers.
+///
+/// `\u{2219}` rather than the more usual `\u{b7}`: the middle dot is East-Asian-Width
+/// Ambiguous and renders two columns wide on terminals configured for CJK, which is the
+/// same alignment bug already fixed once in the glyph set. This one is Narrow.
+const SEPARATOR: &str = "  \u{2219}  ";
 
 fn bold(s: &str) -> String {
     if colour() {
@@ -903,14 +920,14 @@ fn print_exif(path: &Path, report: &blad_meta::Report, offsets: bool, _header: b
         },
         if colour() {
             format!(
-                "\u{1b}[2m{}  ·  {}  ·  {} tags\u{1b}[0m",
+                "\u{1b}[2m{}{SEPARATOR}{}{SEPARATOR}{} tags\u{1b}[0m",
                 human(report.file_len),
                 order,
                 report.field_count()
             )
         } else {
             format!(
-                "{}  ·  {}  ·  {} tags",
+                "{}{SEPARATOR}{}{SEPARATOR}{} tags",
                 human(report.file_len),
                 order,
                 report.field_count()

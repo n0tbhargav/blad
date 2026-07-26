@@ -63,9 +63,22 @@ impl Facet {
 #[derive(Debug, Clone)]
 pub struct Item {
     pub facet: Facet,
-    pub value: String,
+    /// The value, split into a primary and its qualifiers.
+    ///
+    /// Split rather than pre-joined so the caller can build a visual hierarchy — the
+    /// answer at full strength, the qualifications receding — instead of every part
+    /// competing at the same weight with punctuation between them. A library that
+    /// returned one string would force the separator choice on every consumer.
+    pub parts: Vec<String>,
     /// Personally identifying — the caller may want to colour or withhold it.
     pub sensitive: bool,
+}
+
+impl Item {
+    /// Plain single-line form, for `--json` and non-terminal consumers.
+    pub fn value(&self) -> String {
+        self.parts.join(", ")
+    }
 }
 
 /// Look a tag up by name across every directory.
@@ -243,11 +256,16 @@ fn megapixels(w: u64, h: u64) -> String {
 /// Build the compact view. Facets with nothing to say are simply absent.
 pub fn summarise(r: &Report) -> Vec<Item> {
     let mut out: Vec<Item> = Vec::new();
-    let mut push = |facet: Facet, value: String, sensitive: bool| {
-        if !value.trim().is_empty() {
+    let mut push = |facet: Facet, parts: Vec<String>, sensitive: bool| {
+        let parts: Vec<String> = parts
+            .into_iter()
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect();
+        if !parts.is_empty() {
             out.push(Item {
                 facet,
-                value,
+                parts,
                 sensitive,
             });
         }
@@ -263,7 +281,7 @@ pub fn summarise(r: &Report) -> Vec<Item> {
         (Some(mk), None) => mk.clone(),
         _ => String::new(),
     };
-    push(Facet::Camera, camera, false);
+    push(Facet::Camera, vec![camera], false);
 
     let mut lens = Vec::new();
     if let Some(m) = text(r, "LensModel") {
@@ -273,11 +291,12 @@ pub fn summarise(r: &Report) -> Vec<Item> {
         lens.push(f);
     }
     if let Some(e) = text(r, "FocalLengthIn35mmFilm") {
+        // Parentheses were doing the separating; the separator does it now.
         if Some(&e) != lens.last() {
-            lens.push(format!("({e} equivalent)"));
+            lens.push(format!("{e} equivalent"));
         }
     }
-    push(Facet::Lens, lens.join("  "), false);
+    push(Facet::Lens, lens, false);
 
     if let Some(s) = text(r, "ExposureTime") {
         let mode = text(r, "ExposureProgram")
@@ -285,37 +304,38 @@ pub fn summarise(r: &Report) -> Vec<Item> {
             .filter(|p| p != "not defined");
         push(
             Facet::Shutter,
-            match mode {
-                Some(m) => format!("{s}  ·  {m}"),
-                None => s,
-            },
+            vec![s].into_iter().chain(mode).collect(),
             false,
         );
     }
     if let Some(a) = text(r, "FNumber") {
-        push(Facet::Aperture, a, false);
+        push(Facet::Aperture, vec![a], false);
     }
     if let Some(i) = text(r, "ISOSpeedRatings").or_else(|| text(r, "ISOSpeed")) {
-        push(Facet::Iso, i.trim_start_matches("ISO ").to_string(), false);
+        push(
+            Facet::Iso,
+            vec![i.trim_start_matches("ISO ").to_string()],
+            false,
+        );
     }
     if let Some(f) = text(r, "Flash") {
         if !f.starts_with("did not fire") {
             push(
                 Facet::Flash,
-                f.split(" (").next().unwrap_or(&f).to_string(),
+                vec![f.split(" (").next().unwrap_or(&f).to_string()],
                 false,
             );
         }
     }
 
     if let Some(d) = text(r, "DateTimeOriginal").or_else(|| text(r, "DateTime")) {
-        push(Facet::Taken, human_date(&d), false);
+        push(Facet::Taken, vec![human_date(&d)], false);
     }
 
     // Location, with a nearest-city estimate. Never network — see the geo module.
     let redacted_gps = find(r, "GPSLatitude").map(|f| f.redacted).unwrap_or(false);
     if redacted_gps {
-        push(Facet::Where, "<redacted>".into(), true);
+        push(Facet::Where, vec!["<redacted>".into()], true);
     } else if let (Some(lat), Some(lon)) = (
         coord(r, "GPSLatitude", "GPSLatitudeRef"),
         coord(r, "GPSLongitude", "GPSLongitudeRef"),
@@ -329,15 +349,17 @@ pub fn summarise(r: &Report) -> Vec<Item> {
                     .unwrap_or_else(|| if v < 0.0 { neg.into() } else { pos.into() });
             format!("{:.4}\u{b0} {letter}", v.abs())
         };
-        let mut s = format!(
+        let coords = format!(
             "{}, {}",
             fmt_one(lat, "GPSLatitudeRef", "N", "S"),
             fmt_one(lon, "GPSLongitudeRef", "E", "W")
         );
-        if let Some(n) = crate::geo::nearest(lat, lon, 150.0) {
-            s.push_str(&format!("  ·  {n}"));
-        }
-        push(Facet::Where, s, true);
+        let place = crate::geo::nearest(lat, lon, 150.0).map(|n| n.to_string());
+        push(
+            Facet::Where,
+            vec![coords].into_iter().chain(place).collect(),
+            true,
+        );
     }
 
     // Prefer the SubIFD: on a raw file, IFD0 describes the embedded preview.
@@ -391,10 +413,9 @@ pub fn summarise(r: &Report) -> Vec<Item> {
     );
     // What you are holding is an archive; what it describes is the original. Showing
     // only the inner format would hide which of the two is on disk.
-    let fmt = match r.archived {
-        Some(_) => format!("blad archive \u{2192} {}", fmt.join("  \u{b7}  ")),
-        None => fmt.join("  \u{b7}  "),
-    };
+    if r.archived.is_some() {
+        fmt.insert(0, "blad archive".to_string());
+    }
     push(Facet::Format, fmt, false);
 
     if let (Some(w), Some(h)) = (width, height) {
@@ -403,19 +424,18 @@ pub fn summarise(r: &Report) -> Vec<Item> {
         if !mp.is_empty() {
             img.push(mp);
         }
-        push(Facet::Image, img.join("  \u{b7}  "), false);
+        push(Facet::Image, img, false);
 
         let a = aspect(w, h);
         if !a.is_empty() {
+            let orient = match h.cmp(&w) {
+                std::cmp::Ordering::Greater => Some("portrait".to_string()),
+                std::cmp::Ordering::Less => Some("landscape".to_string()),
+                std::cmp::Ordering::Equal => None,
+            };
             push(
                 Facet::Aspect,
-                if h > w {
-                    format!("{a}  \u{b7}  portrait")
-                } else if w > h {
-                    format!("{a}  \u{b7}  landscape")
-                } else {
-                    a
-                },
+                vec![a].into_iter().chain(orient).collect(),
                 false,
             );
         }
@@ -431,7 +451,7 @@ pub fn summarise(r: &Report) -> Vec<Item> {
         if let Some(p) = &photometric {
             d.push(p.clone());
         }
-        push(Facet::Depth, d.join("  \u{b7}  "), false);
+        push(Facet::Depth, d, false);
 
         // Dynamic range, stated from evidence only.
         //
@@ -447,43 +467,51 @@ pub fn summarise(r: &Report) -> Vec<Item> {
         let from_icc = r.icc.as_ref().and_then(|p| {
             let c = p.cicp?;
             c.is_hdr().then(|| {
-                format!(
-                    "HDR \u{2014} {} \u{b7} {}",
-                    c.transfer_name(),
-                    c.primaries_name()
-                )
+                vec![
+                    "HDR".to_string(),
+                    c.transfer_name().to_string(),
+                    c.primaries_name().to_string(),
+                ]
             })
         });
         let from_icc = from_icc.or_else(|| {
             let p = r.icc.as_ref()?;
             (p.cicp.is_none() && p.is_hdr()).then(|| {
-                format!(
-                    "HDR \u{2014} {}",
+                vec![
+                    "HDR".to_string(),
                     p.description
                         .as_deref()
                         .unwrap_or("declared by ICC profile")
-                )
+                        .to_string(),
+                ]
             })
         });
 
         let dynamic = from_icc
             .map(Some)
             .unwrap_or_else(|| match (sample_format, b, is_raw) {
-                (Some(3), _, _) => {
-                    Some("floating point \u{2014} scene-linear, unbounded".to_string())
-                }
+                (Some(3), _, _) => Some(vec![
+                    "floating point".to_string(),
+                    "scene-linear, unbounded".to_string(),
+                ]),
                 // Deliberately no stop count. Bit depth bounds what the file can *encode*;
                 // the sensor's actual dynamic range is a property of the hardware that no
                 // tag records, and a 16-bit container does not mean 16 stops were captured.
-                (_, b, true) if b >= 12 => {
-                    Some(format!("high \u{2014} {b}-bit linear sensor data"))
-                }
-                (_, b, false) if b >= 16 => {
-                    Some(format!("wide \u{2014} {b}-bit, no HDR transfer signalled"))
-                }
-                (_, 8, _) => Some("standard \u{2014} 8-bit, display-referred".to_string()),
+                (_, b, true) if b >= 12 => Some(vec![
+                    "high".to_string(),
+                    format!("{b}-bit linear sensor data"),
+                ]),
+                (_, b, false) if b >= 16 => Some(vec![
+                    "wide".to_string(),
+                    format!("{b}-bit, no HDR transfer signalled"),
+                ]),
+                (_, 8, _) => Some(vec![
+                    "standard".to_string(),
+                    "8-bit, display-referred".to_string(),
+                ]),
                 _ => None,
             });
+
         if let Some(d) = dynamic {
             push(Facet::Dynamic, d, false);
         }
@@ -496,7 +524,7 @@ pub fn summarise(r: &Report) -> Vec<Item> {
     match r.icc.as_ref() {
         Some(p) => colour.push(match (&p.description, p.cicp) {
             (Some(d), _) => format!("ICC: {d}"),
-            (None, Some(c)) => format!("ICC: {} \u{b7} {}", c.primaries_name(), c.transfer_name()),
+            (None, Some(c)) => format!("ICC: {}, {}", c.primaries_name(), c.transfer_name()),
             _ => "ICC profile embedded".into(),
         }),
         None if find(r, "InterColorProfile").is_some() => {
@@ -507,15 +535,7 @@ pub fn summarise(r: &Report) -> Vec<Item> {
     if find(r, "ColorMatrix1").is_some() {
         colour.push("camera matrix present".into());
     }
-    push(
-        Facet::Colour,
-        colour
-            .into_iter()
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("  ·  "),
-        false,
-    );
+    push(Facet::Colour, colour, false);
 
     // Raw-specific: the numbers that define how the sensor data must be read.
     let mut sensor = Vec::new();
@@ -528,16 +548,16 @@ pub fn summarise(r: &Report) -> Vec<Item> {
     if let Some(c) = text(r, "DefaultCropSize") {
         sensor.push(format!("crop {}", c.replace(", ", " × ")));
     }
-    push(Facet::Sensor, sensor.join("  ·  "), false);
+    push(Facet::Sensor, sensor, false);
 
     if let Some(o) = text(r, "Orientation") {
         let o = o.split(" (").next().unwrap_or("").to_string();
         if o != "upright" {
-            push(Facet::Orientation, o, false);
+            push(Facet::Orientation, vec![o], false);
         }
     }
     if let Some(s) = text(r, "Software") {
-        push(Facet::Software, s, false);
+        push(Facet::Software, vec![s], false);
     }
 
     let author: Vec<String> = ["Artist", "Copyright", "CameraOwnerName"]
@@ -545,7 +565,7 @@ pub fn summarise(r: &Report) -> Vec<Item> {
         .filter_map(|t| text(r, t))
         .collect();
     if !author.is_empty() {
-        push(Facet::Author, author.join("  ·  "), true);
+        push(Facet::Author, author, true);
     }
 
     out
@@ -621,9 +641,21 @@ mod tests {
                 .iter()
                 .find(|i| i.facet == Facet::Where)
                 .expect("no Where");
-            assert!(w.value.contains(want_lat), "{} lacks {want_lat}", w.value);
-            assert!(w.value.contains(want_lon), "{} lacks {want_lon}", w.value);
-            assert!(!w.value.contains('-'), "signed value leaked: {}", w.value);
+            assert!(
+                w.value().contains(want_lat),
+                "{} lacks {want_lat}",
+                w.value()
+            );
+            assert!(
+                w.value().contains(want_lon),
+                "{} lacks {want_lon}",
+                w.value()
+            );
+            assert!(
+                !w.value().contains('-'),
+                "signed value leaked: {}",
+                w.value()
+            );
         }
     }
 
@@ -639,12 +671,7 @@ mod tests {
             .iter()
             .find(|i| i.facet == Facet::Format)
             .expect("no Format");
-        assert!(f.value.starts_with("blad archive \u{2192} "), "{}", f.value);
-        assert!(
-            !f.value.contains("\u{2192}  \u{b7}"),
-            "dangling separator: {}",
-            f.value
-        );
+        assert_eq!(f.parts.first().map(String::as_str), Some("blad archive"));
     }
 
     #[test]
