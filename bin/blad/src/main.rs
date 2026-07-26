@@ -831,6 +831,7 @@ fn facet_icon(f: blad_meta::summary::Facet) -> (&'static str, Color) {
         Orientation => ("\u{2349}", Color::Blue), // transpose
         Software => ("\u{2318}", Color::DarkGrey),
         Author => ("\u{235F}", Color::Yellow),
+        Archived => ("\u{2687}", Color::Cyan),
     }
 }
 
@@ -928,6 +929,27 @@ fn read_metadata(path: &Path, opts: &blad_meta::Options) -> Result<blad_meta::Re
         let len = sk.original_len();
         let mut report = blad_meta::read_from(&mut sk, len, opts)?;
         report.archived = Some(on_disk);
+        // What made this archive, from its own record. Useful precisely when something
+        // has gone wrong and you need to know which build to reach for.
+        if let Ok((m, _, _)) = blad_archive::read_manifest(path) {
+            let p = &m.provenance;
+            let mut note = vec![format!("blad {}", m.blad)];
+            if p.format > 0 {
+                note.push(format!("format v{}", p.format));
+            }
+            if !p.codec.is_empty() {
+                note.push(p.codec.clone());
+            }
+            if let Some(par) = p.parity {
+                note.push(format!("parity {:.1}%", par.overhead_percent()));
+            } else {
+                note.push("no parity".into());
+            }
+            if !p.created.is_empty() {
+                note.push(p.created.clone());
+            }
+            report.archive_note = note;
+        }
         return Ok(report);
     }
     Ok(blad_meta::read(path, opts)?)

@@ -127,6 +127,7 @@ version = "0.0.2"
 dependencies = [
  "bytemuck",
  "jpegxl-rs",
+ "jpegxl-sys",
  "thiserror",
 ]
 

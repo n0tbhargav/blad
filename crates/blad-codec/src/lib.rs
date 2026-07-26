@@ -110,6 +110,16 @@ pub trait Codec: Sync {
     /// knows which backend produced a payload.
     fn id(&self) -> &'static str;
 
+    /// Human description of the exact encoder and settings, for the archive's record.
+    ///
+    /// Reported by the linked library rather than assumed from the crate version: what
+    /// matters to someone holding the archive in ten years is which encoder actually
+    /// produced those bytes, and a hardcoded string can drift from reality without
+    /// anyone noticing.
+    fn describe(&self) -> String {
+        self.id().to_string()
+    }
+
     /// Encode `src` (raw samples in the file's byte order), writing the compressed
     /// representation to `out`. Returns bytes written.
     fn encode(&self, src: &[u8], frame: Frame, out: &mut dyn Write) -> Result<u64>;
@@ -175,9 +185,24 @@ fn endianness(little_endian: bool) -> jpegxl_rs::Endianness {
     }
 }
 
+/// libjxl's own version, e.g. `0.12.0`, from the linked library.
+pub fn libjxl_version() -> String {
+    // Encoded as major*1_000_000 + minor*1_000 + patch.
+    let v = unsafe { jpegxl_sys::encoder::encode::JxlEncoderVersion() };
+    format!("{}.{}.{}", v / 1_000_000, (v / 1_000) % 1_000, v % 1_000)
+}
+
 impl Codec for Jxl {
     fn id(&self) -> &'static str {
         "jxl"
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "libjxl {} effort {}",
+            libjxl_version(),
+            self.effort.clamp(1, 10)
+        )
     }
 
     fn encode(&self, src: &[u8], frame: Frame, out: &mut dyn Write) -> Result<u64> {
@@ -379,5 +404,26 @@ mod tests {
             c.decode(&enc, f, &mut out).unwrap();
             assert_eq!(src, out, "le={le}");
         }
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    /// The version must come from the linked library, so that an archive's record of
+    /// how it was made cannot drift from what actually made it.
+    #[test]
+    fn reports_the_linked_libjxl_version() {
+        let v = super::libjxl_version();
+        assert!(
+            v.starts_with("0.") || v.starts_with("1."),
+            "odd version {v}"
+        );
+        assert_eq!(
+            v.matches('.').count(),
+            2,
+            "expected major.minor.patch, got {v}"
+        );
+        use super::Codec;
+        assert!(super::Jxl::default().describe().contains(&v));
     }
 }

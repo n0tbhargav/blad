@@ -32,6 +32,8 @@ pub enum Facet {
     Orientation,
     Software,
     Author,
+    /// How a blad archive was produced. Only present when reading one.
+    Archived,
 }
 
 impl Facet {
@@ -56,6 +58,7 @@ impl Facet {
             Facet::Orientation => "Rotation",
             Facet::Software => "Software",
             Facet::Author => "Author",
+            Facet::Archived => "Archived",
         }
     }
 }
@@ -575,6 +578,10 @@ pub fn summarise(r: &Report) -> Vec<Item> {
         push(Facet::Software, vec![s], false);
     }
 
+    if !r.archive_note.is_empty() {
+        push(Facet::Archived, r.archive_note.clone(), false);
+    }
+
     let author: Vec<String> = ["Artist", "Copyright", "CameraOwnerName"]
         .iter()
         .filter_map(|t| text(r, t))
@@ -612,6 +619,7 @@ mod tests {
             file_len: 1024,
             tiff_base: 0,
             icc: None,
+            archive_note: Vec::new(),
             archived: None,
             groups: vec![crate::Group {
                 kind: IfdKind::Gps,

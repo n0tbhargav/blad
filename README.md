@@ -124,6 +124,19 @@ An archival format that can't prove itself isn't archival.
   make gigabytes interpretable, so damage there costs you everything while damage
   elsewhere costs you a region. Two of three copies can be destroyed and the archive
   still reads.
+- Every archive records **how it was made** — blad version, format version, the encoder
+  as reported by the linked library, effort, parity settings and a UTC timestamp. Read
+  it back with `blad exif <archive>`:
+
+  ```
+  ⚇  Archived  blad 0.0.2 ∙ format v5 ∙ libjxl 0.12.0 effort 7 ∙ parity 6.2% ∙ 2026-07-26T16:09:21Z
+  ```
+
+  Restoring never *needs* this — the format version in the magic decides readability, and
+  blad refuses anything it does not recognise. It is for the questions that come up years
+  later. Deliberately absent: hostname, user and absolute paths. An archive is something
+  people share, and its provenance should not quietly become a fingerprint of the machine
+  that made it.
 - The manifest carries its own digest, checked *before* the JSON is parsed. A flipped bit
   inside a manifest number stays valid JSON and would otherwise yield silently wrong
   offsets.

@@ -9,4 +9,5 @@ description = "Lossless image codec backends for blad"
 [dependencies]
 thiserror.workspace = true
 jpegxl-rs.workspace = true
+jpegxl-sys.workspace = true
 bytemuck.workspace = true

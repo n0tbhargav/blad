@@ -106,6 +106,10 @@ pub struct Report {
     /// master from an sRGB one — both are 16-bit RGB with identical tags. The answer is
     /// inside the profile, so treating it as an opaque blob loses it.
     pub icc: Option<icc::Profile>,
+    /// How the archive was produced, when this came from one. Free-form parts, filled
+    /// by the caller that opened the archive — `blad-meta` does not know the archive
+    /// format and should not have to.
+    pub archive_note: Vec<String>,
     /// Size on disk of the archive this was read out of, when it came from one.
     ///
     /// `file_len` is then the length of the *original* file, since that is the
@@ -233,6 +237,7 @@ fn build(dirs: &ifd::Directories, opts: &Options) -> Report {
         file_len: dirs.file_len,
         tiff_base: dirs.tiff_base,
         icc: icc_profile,
+        archive_note: Vec::new(),
         archived: None,
         groups,
     }

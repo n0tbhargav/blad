@@ -697,6 +697,32 @@ archive **byte-identically**, and the original then restores byte-identically.
 invalidate the published ratios. Stated plainly in the README: parity protects a copy,
 it does not replace one — for an archival tool a second copy beats any ECC scheme.
 
+### Provenance (2026-07-26)
+
+The manifest always carried `blad: <version>` and nothing ever showed it. Now there is a
+`provenance` block — format version, the encoder **as reported by the linked library**
+(`JxlEncoderVersion()`, not a hardcoded string that can drift from what actually
+produced the bytes), effort, parity config, and a UTC timestamp — surfaced by
+`blad exif <archive>` as an `Archived` facet.
+
+Three decisions worth keeping:
+
+- **It is not required to restore.** The format version in the magic decides readability
+  and is enforced exactly; provenance answers the *other* questions — which build made
+  this, at what setting, when, and does it carry parity. Conflating the two would make a
+  record into a dependency.
+- **Added without a format bump.** JSON with `#[serde(default)]` means a reader that
+  predates a field is not a broken reader — which is why the manifest is JSON rather
+  than a packed struct. Tested against a v0.0.1-shaped manifest.
+- **No hostname, user or absolute paths.** An archive is something people share, and
+  provenance must not quietly turn it into a fingerprint of the machine that made it.
+  The original *filename* is stored because restoring needs it; nothing else about the
+  environment is. A test asserts the manifest contains none of `$USER`, `/Users`,
+  `/private`.
+
+`now_utc()` is Howard Hinnant's civil-from-days rather than a date dependency — twelve
+lines against a crate, for one timestamp.
+
 ### Crate layout
 
 ```

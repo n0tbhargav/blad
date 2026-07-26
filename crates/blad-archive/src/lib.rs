@@ -151,6 +151,10 @@ pub struct Original {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Manifest {
     pub blad: String,
+    /// How this archive was made. Absent from archives written before it existed, which
+    /// is why the format is JSON: a reader that predates a field is not a broken reader.
+    #[serde(default)]
+    pub provenance: Provenance,
     pub original: Original,
     /// SHA-256 of the archive body. Lets corruption be detected without decoding
     /// anything — the difference between a scan that can run nightly and one that
@@ -158,6 +162,73 @@ pub struct Manifest {
     pub body_sha256: String,
     pub layout: Layout,
     pub blobs: Vec<Blob>,
+}
+
+/// The record of how an archive was produced.
+///
+/// Not required to restore — the format version in the magic decides that, and blad
+/// refuses anything it does not recognise. This is for the other questions, the ones
+/// that come up years later: which encoder produced these bytes, at what setting, on
+/// what date, and does this archive carry parity.
+///
+/// Deliberately excluded: hostname, user, and absolute paths. An archive is a thing
+/// people share, and provenance should not quietly turn it into a fingerprint of the
+/// machine that made it. The original *filename* is already stored because restoring
+/// needs it; nothing else about the environment is.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Provenance {
+    /// Archive format version — the number in the magic that decides readability.
+    #[serde(default)]
+    pub format: u8,
+    /// The encoder that produced the payload, as reported by the linked library.
+    #[serde(default)]
+    pub codec: String,
+    /// UTC, RFC 3339, second resolution.
+    #[serde(default)]
+    pub created: String,
+    /// Parity configuration, if any was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parity: Option<ParityInfo>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ParityInfo {
+    pub data_shards: u16,
+    pub parity_shards: u16,
+    pub shard_size: u32,
+}
+
+impl ParityInfo {
+    pub fn overhead_percent(&self) -> f64 {
+        if self.data_shards == 0 {
+            return 0.0;
+        }
+        f64::from(self.parity_shards) / f64::from(self.data_shards) * 100.0
+    }
+}
+
+/// UTC timestamp, RFC 3339, without pulling in a date library for one line.
+fn now_utc() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let (h, mi, sec) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+
+    // Civil-from-days (Howard Hinnant's algorithm), valid across the proleptic calendar.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{sec:02}Z")
 }
 
 fn hex(d: &[u8]) -> String {
@@ -647,6 +718,16 @@ pub fn archive_with(
 
     let manifest = Manifest {
         blad: env!("CARGO_PKG_VERSION").to_string(),
+        provenance: Provenance {
+            format: MAGIC[4],
+            codec: codec.describe(),
+            created: now_utc(),
+            parity: parity.map(|c| ParityInfo {
+                data_shards: c.data_shards as u16,
+                parity_shards: c.parity_shards as u16,
+                shard_size: c.shard_size as u32,
+            }),
+        },
         original: Original {
             name: src
                 .file_name()
@@ -1498,6 +1579,72 @@ mod tests {
             "dry run claimed it was repairable"
         );
         assert!(repair(&arc, true).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The record must survive a reader that predates a field, which is the whole reason
+    /// the manifest is JSON rather than a packed struct.
+    #[test]
+    fn manifest_without_provenance_still_parses() {
+        let json = br#"{
+            "blad": "0.0.1",
+            "original": {"name":"a.tif","len":4,"sha256":"ab"},
+            "body_sha256": "cd",
+            "layout": {"container":"tiff","total_len":4,"orientation":1,
+                       "segments":[{"src_offset":0,"len":4,"kind":"Verbatim"}]},
+            "blobs": []
+        }"#;
+        let m: Manifest = serde_json::from_slice(json).unwrap();
+        assert_eq!(m.blad, "0.0.1");
+        assert_eq!(m.provenance, Provenance::default());
+        assert!(m.provenance.parity.is_none());
+    }
+
+    /// Timestamps are UTC and correctly shaped; the civil-date conversion is easy to get
+    /// subtly wrong and there is no library here to lean on.
+    #[test]
+    fn timestamps_are_well_formed_utc() {
+        let t = now_utc();
+        assert_eq!(t.len(), 20, "{t}");
+        assert!(t.ends_with('Z') && t.contains('T'), "{t}");
+        let year: i32 = t[0..4].parse().unwrap();
+        assert!((2020..2200).contains(&year), "implausible year in {t}");
+        let month: u32 = t[5..7].parse().unwrap();
+        let day: u32 = t[8..10].parse().unwrap();
+        assert!((1..=12).contains(&month) && (1..=31).contains(&day), "{t}");
+    }
+
+    /// Provenance records how it was made, and nothing about the machine that made it.
+    #[test]
+    fn provenance_records_the_codec_and_parity_but_not_the_environment() {
+        let dir = tmp();
+        let src = dir.join("p.tif");
+        let arc = dir.join("p.blad");
+        std::fs::write(&src, synth_tiff(1024, 1024, 3, 2, 71)).unwrap();
+        let cfg = blad_parity::Config {
+            data_shards: 8,
+            parity_shards: 2,
+            shard_size: 4096,
+        };
+        archive_with(&src, &arc, &Identity, Some(cfg)).unwrap();
+
+        let (m, _, _) = read_manifest(&arc).unwrap();
+        assert_eq!(m.provenance.format, MAGIC[4]);
+        assert_eq!(m.provenance.codec, "identity");
+        assert_eq!(m.provenance.parity.unwrap().parity_shards, 2);
+        assert!((m.provenance.parity.unwrap().overhead_percent() - 25.0).abs() < 0.01);
+
+        // No hostname, user, or absolute path anywhere in the record.
+        let json = serde_json::to_string(&m).unwrap();
+        for leak in [
+            std::env::var("USER").unwrap_or_default(),
+            "/Users".to_string(),
+            "/private".to_string(),
+        ] {
+            if !leak.is_empty() {
+                assert!(!json.contains(&leak), "manifest leaked {leak:?}");
+            }
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 
