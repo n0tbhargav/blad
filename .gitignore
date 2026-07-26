@@ -1,4 +1,8 @@
 /target
+
+# macOS Finder metadata. Records folder view settings and, in some cases, the
+# names of files that were in the directory — including deleted ones.
+.DS_Store
 # Archives and any image files: this is a tool for large binaries, and stray
 # outputs land in the working directory by default. Never let them into history.
 *.blad
