@@ -270,6 +270,7 @@ without measuring on both CFA and RGB.**
 blad archive [--dry-run] [--effort N]   main verb, verified on write, batch-capable
 blad verify  [--quick]                  does it still restore?
 blad restore                            get the original back
+blad thumb                              hidden; development aid
 blad layout                             hidden; development aid
 ```
 
@@ -367,10 +368,16 @@ metadata fidelity, GPU backend proven to match the CPU path within a stated tole
    the JSON is parsed: a flipped bit inside a manifest *number* stays valid JSON and
    would silently yield wrong offsets — the failure that looks like a codec bug and is
    not.
-3. ~~`blad thumb`.~~ **Done.** 512px JPEG, **0.050%** of a 56 MB archive, read with one
+3. ~~`blad thumb`.~~ **Done, then hidden from the CLI.** 512px JPEG, **0.050%** of a 56 MB archive, read with one
    seek and no JXL decode. Source is the smallest RGB segment — normally the camera's
    own embedded preview, already demosaiced and colour-rendered. CFA-only sources get an
    empty thumbnail rather than a failed archive.
+   - **The verb is `hide = true` as of 2026-07-25.** Once format v4 made an archive a
+     valid JPEG, nothing a user does requires the verb: every image viewer already shows
+     the preview. The "extract a clean 29 KB JPEG instead of copying the 58.6 MB archive"
+     argument is real but hypothetical — no observed user wants it. Kept hidden, like
+     `layout`, because checking *what was embedded* is how the sideways-thumbnail bug was
+     caught. `blad_archive::thumbnail()` stays public; `archive` depends on it regardless.
    - Downscaling runs in **linear light**. A test averages a black/white checkerboard and
      asserts ~188 (the photometric mean), not 128 (what averaging gamma-encoded values
      gives). Getting this wrong is what makes most software's thumbnails too dark.
@@ -391,7 +398,7 @@ metadata fidelity, GPU backend proven to match the CPU path within a stated tole
    a Developer ID. Finder icons stayed generic.
 
    **Removed.** The plist scaffolding was not worth carrying for an icon. The format
-   change stays — it costs nothing, `blad thumb` works, and it leaves the door open.
+   change stays — it costs nothing, previews work everywhere, and it leaves the door open.
 
    Worth knowing: **Hasselblad does nothing here.** Phocus ships no Quick Look plugin;
    macOS has *built-in* RAW support and lists Hasselblad X1D-50c among its known cameras.

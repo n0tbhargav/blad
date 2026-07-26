@@ -133,7 +133,6 @@ blad verify <archives>...    prove an archive still restores
   --quick                    checksum stored bytes only, no decode
 
 blad restore <archive>       write the original back out
-blad thumb <archive>         extract the embedded preview as a JPEG
 ```
 
 **Effort is non-monotonic.** Higher is not reliably smaller: on Bayer planes effort 7
@@ -198,8 +197,7 @@ Tested on Linux and macOS, x86-64 and ARM64, in CI. Windows builds are not yet p
 
 ## Status
 
-`archive` / `verify` / `restore` / `thumb` work and are tested against real Hasselblad
-X1D files. Next: `blad exif`, batch parallelism, and lossless-JPEG recompression to
+`archive` / `verify` / `restore` work and are tested against real Hasselblad X1D files. Next: `blad exif`, batch parallelism, and lossless-JPEG recompression to
 unlock CR2 and compressed DNG.
 
 blad is the archival front end of a larger project — a colour-correct, memory-safe image

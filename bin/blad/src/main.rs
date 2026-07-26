@@ -73,7 +73,11 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Extract an archive's embedded preview as a JPEG.
+    /// Extract an archive's embedded preview as a JPEG. Development aid: the archive is
+    /// already a valid JPEG, so anything that displays images shows the preview without
+    /// this. It exists to check *what was embedded*, which is how the sideways-thumbnail
+    /// bug was found.
+    #[command(hide = true)]
     Thumb {
         archive: PathBuf,
         /// Output path, or `-` for stdout (default: <archive>.jpg).
