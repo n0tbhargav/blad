@@ -2,6 +2,7 @@
 # Archives and any image files: this is a tool for large binaries, and stray
 # outputs land in the working directory by default. Never let them into history.
 *.blad
+*.blad.*
 *.tif
 *.tiff
 *.3FR

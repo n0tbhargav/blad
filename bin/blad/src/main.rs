@@ -190,10 +190,34 @@ fn codec(effort: u8) -> Jxl {
     }
 }
 
-fn default_output(input: &Path) -> PathBuf {
-    let mut p = input.as_os_str().to_owned();
-    p.push(".blad");
-    PathBuf::from(p)
+/// `photo.3FR` becomes `photo.blad.3FR`.
+///
+/// The original extension stays *last* on purpose. An archive opens with a JPEG
+/// thumbnail, and ImageIO identifies image formats from content rather than from the
+/// name — so any extension the system already routes into its image pipeline gets
+/// previews in Finder, Explorer and every file manager, with no plugin, no type
+/// declaration and no code signing.
+///
+/// Keeping the *original* extension rather than a generic `.jpeg` also means the name
+/// records what is inside, and it is the safest choice: bulk optimisers and photo
+/// organisers rewrite JPEGs constantly and vendor raw files essentially never, so the
+/// option that looks most like a disguise is in practice the least likely to get the
+/// archive silently overwritten.
+fn archive_name(input: &Path) -> PathBuf {
+    match (input.file_stem(), input.extension()) {
+        (Some(stem), Some(ext)) => {
+            let mut name = stem.to_owned();
+            name.push(".blad.");
+            name.push(ext);
+            input.with_file_name(name)
+        }
+        // No extension to preserve, so there is nothing to route on either.
+        _ => {
+            let mut p = input.as_os_str().to_owned();
+            p.push(".blad");
+            PathBuf::from(p)
+        }
+    }
 }
 
 fn print_layout(input: &Path, layout: &Layout) {
@@ -360,7 +384,7 @@ fn cmd_archive(
 
     let (mut total_in, mut total_out, mut failures) = (0u64, 0u64, 0usize);
     for input in inputs {
-        let dst = output.map(PathBuf::from).unwrap_or_else(|| default_output(input));
+        let dst = output.map(PathBuf::from).unwrap_or_else(|| archive_name(input));
         match blad_archive::archive(input, &dst, &c) {
             Ok(r) => {
                 total_in += r.original_len;
@@ -436,7 +460,8 @@ fn cmd_verify(archives: &[PathBuf], quick: bool) -> Result<()> {
         };
         match outcome {
             Ok(m) => {
-                let derived = format!("{}.blad", m.original.name);
+                let derived = archive_name(Path::new(&m.original.name));
+                let derived = derived.file_name().unwrap_or_default().to_string_lossy();
                 rows.push(Row {
                     holds: if derived == archive {
                         String::new()

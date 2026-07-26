@@ -11,7 +11,7 @@ $ blad archive x1d-xcd45-03.3FR
  x1d-xcd45-03.3FR  105.3 MB  55.8 MB  47.0%  █████▋······
   byte-exact reconstruction verified
 
-$ blad restore x1d-xcd45-03.3FR.blad -o out.3FR
+$ blad restore x1d-xcd45-03.blad.3FR -o out.3FR
 $ cmp x1d-xcd45-03.3FR out.3FR && echo identical
 identical
 ```
@@ -113,11 +113,25 @@ blad restore <archive>       write the original back out
 blad thumb <archive>         extract the embedded preview as a JPEG
 ```
 
-An archive opens with a complete JPEG thumbnail — decoders stop at the end marker and
-ignore the archive behind it — so anything that reads JPEG can show a preview of a blad
-file. The thumbnail is built from the camera's embedded preview where one exists,
-downscaled in **linear light** (averaging gamma-encoded values darkens detail) and
-rotated per the orientation tag, so portrait frames are not shown sideways.
+## Previews, for free
+
+`photo.3FR` archives to `photo.blad.3FR` — the original extension stays last.
+
+An archive opens with a complete JPEG thumbnail, and decoders stop at the end marker and
+ignore the archive behind it. Operating systems route files into their image pipeline by
+extension but identify the actual format from *content*, so keeping any image extension
+means Finder, Explorer and Linux file managers all show a preview. No plugin, no type
+declaration, no code signing.
+
+Keeping the **original** extension rather than a generic `.jpeg` does two things: the
+name records what is inside, and it is the safer choice. Bulk optimisers and photo
+organisers rewrite JPEGs constantly and vendor raw files essentially never — so the
+option that looks most like a disguise is in practice the least likely to get your
+archive silently overwritten.
+
+The thumbnail comes from the camera's embedded preview where one exists, downscaled in
+**linear light** (averaging gamma-encoded values darkens detail) and rotated per the
+orientation tag, so portrait frames are not shown sideways.
 
 **Effort is non-monotonic.** Higher is not reliably smaller: on Bayer planes effort 7
 encoded *larger* than effort 4 and took 3.8× longer; on a 51MP RGB frame effort 9 was
