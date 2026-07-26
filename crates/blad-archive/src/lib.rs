@@ -84,8 +84,10 @@ pub enum Error {
     Manifest(#[from] serde_json::Error),
     #[error("not a blad archive")]
     NotAnArchive,
-    #[error("archive format version {0} is newer than this build understands")]
-    FutureVersion(u8),
+    #[error("archive format version {0} is newer than this build understands (this build writes and reads v{1})")]
+    FutureVersion(u8, u8),
+    #[error("archive format version {0} predates this build (this build writes and reads v{1}); the format is not yet stable, so old archives must be restored with the version that wrote them")]
+    PastVersion(u8, u8),
     #[error("archive is truncated or corrupt: {0}")]
     Corrupt(String),
     /// The failure that must never reach the user silently.
@@ -563,8 +565,14 @@ pub fn read_manifest(path: &Path) -> Result<(Manifest, u64, u64)> {
     if magic[0..4] != MAGIC[0..4] {
         return Err(Error::NotAnArchive);
     }
-    if magic[4] > MAGIC[4] {
-        return Err(Error::FutureVersion(magic[4]));
+    // Exact match, not "<= current". The format is pre-1.0 and has changed four times;
+    // silently accepting an older version would parse it with the wrong offsets, which
+    // looks like corruption rather than like the version mismatch it is. Refusing with
+    // the actual numbers is the only answer that tells the user what to do next.
+    match magic[4].cmp(&MAGIC[4]) {
+        std::cmp::Ordering::Greater => return Err(Error::FutureVersion(magic[4], MAGIC[4])),
+        std::cmp::Ordering::Less => return Err(Error::PastVersion(magic[4], MAGIC[4])),
+        std::cmp::Ordering::Equal => {}
     }
     let body_off = thumb_len + MAGIC.len() as u64;
 
@@ -955,6 +963,41 @@ mod tests {
             MAGIC,
             "magic must follow the thumbnail"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Version mismatches must be reported as version mismatches. Guessing at another
+    /// version's layout produces wrong offsets, which surfaces as "corrupt" and sends
+    /// the user looking for a bug that is not there.
+    #[test]
+    fn foreign_format_versions_are_refused_by_version_not_by_corruption() {
+        let dir = tmp();
+        let src = dir.join("a.tif");
+        let arc = dir.join("a.blad");
+        std::fs::write(&src, synth_tiff(64, 64, 3, 2, 31)).unwrap();
+        archive(&src, &arc, &Identity).unwrap();
+
+        let good = std::fs::read(&arc).unwrap();
+        let off = good
+            .windows(5)
+            .position(|w| w == MAGIC)
+            .expect("magic present");
+
+        for (v, want_future) in [(MAGIC[4] + 1, true), (MAGIC[4] - 1, false)] {
+            let mut bad = good.clone();
+            bad[off + 4] = v;
+            std::fs::write(&arc, &bad).unwrap();
+            let e = verify_quick(&arc).unwrap_err();
+            match (&e, want_future) {
+                (Error::FutureVersion(got, cur), true) => {
+                    assert_eq!((*got, *cur), (v, MAGIC[4]))
+                }
+                (Error::PastVersion(got, cur), false) => {
+                    assert_eq!((*got, *cur), (v, MAGIC[4]))
+                }
+                _ => panic!("v{v} gave {e:?}, expected a version error"),
+            }
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

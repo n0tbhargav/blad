@@ -1,9 +1,13 @@
 # blad
 
+[![ci](https://github.com/n0tbhargav/blad/actions/workflows/ci.yml/badge.svg)](https://github.com/n0tbhargav/blad/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/blad.svg)](https://crates.io/crates/blad)
+[![license](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#license)
+
 Byte-exact image archival. Compress a raw or TIFF, get **the same file** back — not
 equivalent pixels, the same bytes.
 
-```
+```console
 $ blad archive x1d-xcd45-03.3FR
 
  file              original  stored   saved
@@ -15,6 +19,45 @@ $ blad restore x1d-xcd45-03.blad.3FR -o out.3FR
 $ cmp x1d-xcd45-03.3FR out.3FR && echo identical
 identical
 ```
+
+A 105 MB Hasselblad raw becomes 56 MB and comes back bit-for-bit. Not "visually
+lossless", not "same pixels, new container" — the same SHA-256.
+
+> [!WARNING]
+> **Pre-release. Don't use blad as your only copy of anything.**
+> The archive format is not frozen — it has changed four times — and blad refuses to
+> read archives written by a different format version. There is no error-correcting
+> parity, so corruption is detected but not repaired. See [Stability](#stability).
+
+## Install
+
+### Prebuilt binaries
+
+Download from [Releases](https://github.com/n0tbhargav/blad/releases) — Linux and macOS,
+x86-64 and ARM64. Verify before use:
+
+```console
+$ sha256sum -c SHA256SUMS --ignore-missing
+$ tar -xzf blad-*-aarch64-apple-darwin.tar.gz
+$ ./blad-*/blad --version
+```
+
+libjxl is vendored and statically linked, so the binary needs nothing installed
+alongside it. Linux builds link the host glibc (Ubuntu 24.04); on older distributions,
+build from source.
+
+macOS binaries are unsigned. Gatekeeper will quarantine a downloaded binary — clear it
+with `xattr -d com.apple.quarantine ./blad`, or build from source if you would rather
+not.
+
+### From source
+
+```console
+$ cargo install blad
+```
+
+Requires **cmake** and a C++ toolchain: libjxl is compiled from source, which takes
+about a minute on the first build and is then cached.
 
 ## Why not just use an existing compressor?
 
@@ -28,17 +71,19 @@ General-purpose compressors look for repeated byte sequences. Photographs don't 
 those — they have 2D spatial correlation, which LZ cannot see. `zstd -19` is actually
 *worse* than `zstd -3` on this data: more effort spent finding nothing.
 
-And the tools that *can* compress images properly won't give you your file back.
-`cjxl` cannot read TIFF at all; converting via PNM discards your ICC profile, Exif,
-XMP and GPS, and hands you a PNM instead of a TIFF. Lossless DNG preserves image data
-but produces a different file. blad keeps the container.
+And the tools that *can* compress images properly won't give you your file back. `cjxl`
+cannot read TIFF at all; converting via PNM discards your ICC profile, Exif, XMP and
+GPS, and hands you a PNM instead of a TIFF. Lossless DNG preserves image data but
+produces a different file.
+
+blad keeps the container. That is the whole point — everything else is downstream of it.
 
 ## How it works
 
 A file is described as an ordered list of byte segments that tile it completely.
 Segments we don't model — headers, IFDs, metadata, previews — are stored verbatim.
-Segments holding raw pixel data go to a lossless codec. Reassembling in order
-reproduces the original exactly.
+Segments holding raw pixel data go to a lossless codec (JPEG XL, via vendored libjxl).
+Reassembling in order reproduces the original exactly.
 
 That means partial knowledge of a format is still safe: whatever isn't understood is
 copied, never reinterpreted.
@@ -66,36 +111,14 @@ An archival format that can't prove itself isn't archival.
 
 - `archive` reconstructs from what it just wrote and compares SHA-256 **before**
   reporting success. A file that can't be reproduced is never left on disk.
-- `verify --quick` checksums the stored bytes without decoding — 4 MB of memory,
-  0.17s — so bit-rot scans can run on a schedule across a whole library.
+- `verify --quick` checksums the stored bytes without decoding — 4 MB of memory, 0.17s —
+  so bit-rot scans can run on a schedule across a whole library.
 - `verify` reconstructs fully, proving the decode path still works.
 - `restore` writes to a `.part` file and renames only after the hash matches, so an
   interrupted restore can never leave something that looks like your original.
-
-## Scope, honestly
-
-blad only recompresses pixel data stored **uncompressed**. Already-compressed regions —
-an LZW TIFF, a vendor-compressed CR2 or NEF — are kept verbatim, so those files archive
-at roughly 1.000. Modelling an existing compressed bitstream well enough to reproduce it
-byte-for-byte is a much harder problem, solved so far only for JPEG (by libjxl). blad
-trades that depth for breadth.
-
-If you export TIFFs for archive, export them **uncompressed** and let blad compress
-them: you end up smaller than LZW would have made them and keep byte-exact restoration.
-
-Low-ISO files compress better than high-ISO ones. Sensor noise is genuinely random and
-therefore incompressible — the same photo at ISO 400 and ISO 1600 gives 0.568 and 0.640.
-No encoder can do anything about that.
-
-## Install
-
-```
-cargo install --path bin/blad
-```
-
-libjxl is vendored and statically linked, so the resulting binary depends only on the
-platform C/C++ runtime — nothing to install alongside it. Building from source does
-require **cmake** and a C++ toolchain, since libjxl is compiled from source.
+- The manifest carries its own digest, checked *before* the JSON is parsed. A flipped bit
+  inside a manifest number stays valid JSON and would otherwise yield silently wrong
+  offsets.
 
 ## Usage
 
@@ -112,6 +135,11 @@ blad verify <archives>...    prove an archive still restores
 blad restore <archive>       write the original back out
 blad thumb <archive>         extract the embedded preview as a JPEG
 ```
+
+**Effort is non-monotonic.** Higher is not reliably smaller: on Bayer planes effort 7
+encoded *larger* than effort 4 and took 3.8× longer; on a 51MP RGB frame effort 9 was
+larger than effort 7 and 36× slower than 4. The default of 4 was chosen by measurement.
+Effort 1 costs about 5% ratio for a 3× speedup, which is reasonable for bulk work.
 
 ## Previews, for free
 
@@ -133,19 +161,50 @@ The thumbnail comes from the camera's embedded preview where one exists, downsca
 **linear light** (averaging gamma-encoded values darkens detail) and rotated per the
 orientation tag, so portrait frames are not shown sideways.
 
-**Effort is non-monotonic.** Higher is not reliably smaller: on Bayer planes effort 7
-encoded *larger* than effort 4 and took 3.8× longer; on a 51MP RGB frame effort 9 was
-larger than effort 7 and 36× slower than 4. The default of 4 was chosen by measurement.
-Effort 1 costs about 5% ratio for a 3× speedup, which is reasonable for bulk work.
+## Scope, honestly
+
+blad only recompresses pixel data stored **uncompressed**. Already-compressed regions —
+an LZW TIFF, a vendor-compressed CR2 or NEF — are kept verbatim, so those files archive
+at roughly 1.000. Modelling an existing compressed bitstream well enough to reproduce it
+byte-for-byte is a much harder problem, solved so far only for JPEG (by libjxl). blad
+trades that depth for breadth.
+
+If you export TIFFs for archive, export them **uncompressed** and let blad compress them:
+you end up smaller than LZW would have made them and keep byte-exact restoration.
+
+Low-ISO files compress better than high-ISO ones. Sensor noise is genuinely random and
+therefore incompressible — the same photo at ISO 400 and ISO 1600 gives 0.568 and 0.640.
+No encoder can do anything about that.
+
+## Stability
+
+| | status |
+|---|---|
+| byte-exactness | verified on every archive, before it is written |
+| archive format | **not frozen** — v4, changed four times |
+| CLI surface | expect changes |
+| cross-version reads | refused, with the version numbers in the message |
+
+blad refuses archives written by any other format version rather than guessing at their
+layout, because a misparsed archive looks like corruption instead of like the version
+mismatch it is. In practice: **keep the binary that wrote an archive, or keep the
+original file, until 0.1.0.**
+
+At 0.1.0 the format gets a written compatibility guarantee and blad gains the ability to
+read older versions. Until then, treat archives as reproducible outputs rather than as
+masters.
+
+Tested on Linux and macOS, x86-64 and ARM64, in CI. Windows builds are not yet passing.
 
 ## Status
 
-Early. `archive` / `verify` / `restore` / `thumb` work and are tested on real Hasselblad
-files, and every archive proves itself before it is written. But the format is still
-moving — it has changed four times already — and there is no error-correcting parity, so
-corruption can be detected but not repaired. **Don't use it as your only copy of
-anything.**
+`archive` / `verify` / `restore` / `thumb` work and are tested against real Hasselblad
+X1D files. Next: `blad exif`, batch parallelism, and lossless-JPEG recompression to
+unlock CR2 and compressed DNG.
+
+blad is the archival front end of a larger project — a colour-correct, memory-safe image
+pipeline, in the spirit of what FFmpeg is for video.
 
 ## License
 
-Apache-2.0 OR MIT
+Apache-2.0 OR MIT, at your option.
