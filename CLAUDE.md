@@ -517,7 +517,31 @@ metadata fidelity, GPU backend proven to match the CPU path within a stated tole
      space the directories describe, so reporting only it claimed 293 MB for a file
      occupying 167 MB.
 
-7. **`blad-meta::icc` — minimal ICC reading, and the first piece of Phase 1.**
+8. **HDR-aware thumbnails.** The archive preview of a PQ master looked washed out —
+   lifted blacks, no contrast — because `blad-thumb` decoded every file as sRGB.
+
+   Measured, the error is not subtle: at code value 0.05, PQ decodes to **0.0003** where
+   sRGB gives 0.0039, thirteen times darker. At 0.75 PQ gives 4.84 against sRGB's 0.52.
+   Reading PQ as sRGB therefore lifts the shadows and crushes the highlights — precisely
+   "washed out".
+
+   `blad-thumb` now takes a `Color { transfer, primaries }`, sourced from the ICC `cicp`
+   tag via `blad-meta::icc`, and the pipeline is: decode with the real transfer function
+   → area-average in linear → tone map → BT.2020→sRGB matrix → encode sRGB. 16-bit PQ is
+   decoded at full depth through a 65,536-entry table, because PQ concentrates precision
+   low in the range and taking the high byte bands the shadows.
+
+   **The tone curve was chosen by measurement, not by reputation.** Extended Reinhard —
+   the obvious pick — maps 0.5 to 0.34 with a white point of 8, darkening every mid-tone
+   in the picture. Replaced with a knee at 0.8: identity below, exponential soft-clip
+   above, asymptotic to 1.0 so nothing clips hard. A photograph mastered in PQ keeps its
+   diffuse white at 1.0 with most content below, so the tones that matter must pass
+   through untouched. Luminance drives the curve and channels scale together, preserving
+   hue where a per-channel curve desaturates highlights toward white.
+
+   Validated against macOS ImageIO's own rendering of the same file.
+
+9. **`blad-meta::icc` — minimal ICC reading, and the first piece of Phase 1.**
 
    Prompted by a real file: `hdr.tif`, a BT.2100 PQ master, which blad confidently
    labelled "no HDR transfer signalled". **Nothing in TIFF or Exif distinguishes a PQ

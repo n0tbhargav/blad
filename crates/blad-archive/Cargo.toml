@@ -8,6 +8,7 @@ description = "Byte-exact archival container for image files"
 
 [dependencies]
 blad-container.workspace = true
+blad-meta.workspace = true
 blad-cfa.workspace = true
 blad-codec.workspace = true
 blad-mem.workspace = true

@@ -87,6 +87,7 @@ dependencies = [
  "blad-codec",
  "blad-container",
  "blad-mem",
+ "blad-meta",
  "blad-thumb",
  "serde",
  "serde_json",

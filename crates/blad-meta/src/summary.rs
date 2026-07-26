@@ -298,7 +298,18 @@ pub fn summarise(r: &Report) -> Vec<Item> {
     }
     push(Facet::Lens, lens, false);
 
-    if let Some(s) = text(r, "ExposureTime") {
+    // Not every camera writes ExposureTime. APEX ShutterSpeedValue is the older
+    // encoding — a log2 value where time = 2^-Tv — and is all some files carry.
+    let shutter = text(r, "ExposureTime").or_else(|| {
+        let v = find(r, "ShutterSpeedValue")?.value.as_f64()?;
+        let secs = 2f64.powf(-v);
+        Some(if secs >= 1.0 {
+            format!("{secs:.1} s")
+        } else {
+            format!("1/{:.0} s", 1.0 / secs)
+        })
+    });
+    if let Some(s) = shutter {
         let mode = text(r, "ExposureProgram")
             .and_then(|p| p.split(" (").next().map(str::to_string))
             .filter(|p| p != "not defined");
@@ -308,7 +319,11 @@ pub fn summarise(r: &Report) -> Vec<Item> {
             false,
         );
     }
-    if let Some(a) = text(r, "FNumber") {
+    let aperture = text(r, "FNumber").or_else(|| {
+        let v = find(r, "ApertureValue")?.value.as_f64()?;
+        Some(format!("f/{:.1}", 2f64.powf(v / 2.0)))
+    });
+    if let Some(a) = aperture {
         push(Facet::Aperture, vec![a], false);
     }
     if let Some(i) = text(r, "ISOSpeedRatings").or_else(|| text(r, "ISOSpeed")) {
@@ -501,10 +516,10 @@ pub fn summarise(r: &Report) -> Vec<Item> {
                     "high".to_string(),
                     format!("{b}-bit linear sensor data"),
                 ]),
-                (_, b, false) if b >= 16 => Some(vec![
-                    "wide".to_string(),
-                    format!("{b}-bit, no HDR transfer signalled"),
-                ]),
+                // No facet at all when there is no positive signal. "No HDR transfer
+                // signalled" is a statement about our knowledge, not about the file,
+                // and a row that only says "nothing here" is worse than no row.
+                (_, b, false) if b >= 16 => None,
                 (_, 8, _) => Some(vec![
                     "standard".to_string(),
                     "8-bit, display-referred".to_string(),

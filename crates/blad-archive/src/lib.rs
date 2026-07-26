@@ -345,6 +345,37 @@ fn thumb_source(layout: &Layout) -> Option<(&blad_container::Segment, &ImageSpec
 ///
 /// Returns an empty vector when there is nothing usable — a raw with no embedded preview,
 /// say. A missing thumbnail is a cosmetic loss and must never fail an archive.
+/// What the embedded ICC profile says about encoding, for the thumbnailer.
+///
+/// Without this a PQ master is downscaled as though it were sRGB, which lifts the blacks
+/// and flattens the contrast — the preview looks washed out while the archive itself is
+/// perfect. The signal is the ICC `cicp` tag; nothing in TIFF or Exif carries it.
+fn thumb_color(src: &Path) -> blad_thumb::Color {
+    let Ok(dirs) = blad_container::ifd::read(src) else {
+        return blad_thumb::Color::default();
+    };
+    let icc = dirs
+        .ifds
+        .iter()
+        .flat_map(|i| &i.entries)
+        .find(|e| e.tag == 34675 && e.unreadable.is_none())
+        .and_then(|e| blad_meta::icc::parse(&e.bytes));
+    let Some(cicp) = icc.and_then(|p| p.cicp) else {
+        return blad_thumb::Color::default();
+    };
+    blad_thumb::Color {
+        transfer: match cicp.transfer {
+            16 => blad_thumb::Transfer::Pq,
+            18 => blad_thumb::Transfer::Hlg,
+            _ => blad_thumb::Transfer::Srgb,
+        },
+        primaries: match cicp.primaries {
+            9 => blad_thumb::Primaries::Bt2020,
+            _ => blad_thumb::Primaries::Srgb,
+        },
+    }
+}
+
 fn make_thumbnail(src: &Path, layout: &Layout) -> Vec<u8> {
     let Some((seg, spec)) = thumb_source(layout) else {
         return Vec::new();
@@ -368,6 +399,7 @@ fn make_thumbnail(src: &Path, layout: &Layout) -> Vec<u8> {
         spec.little_endian,
         layout.orientation,
         blad_thumb::MAX_EDGE,
+        thumb_color(src),
     )
     .unwrap_or_default()
 }
