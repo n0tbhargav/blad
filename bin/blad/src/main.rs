@@ -808,14 +808,21 @@ fn print_summary(path: &Path, report: &blad_meta::Report) {
     let items = blad_meta::summary::summarise(report);
     let name = path.file_name().unwrap_or_default().to_string_lossy();
 
+    // For an archive, file_len is the *original's* length — the coordinate space the
+    // directories describe. Printing only that would claim 293 MB for a file that
+    // occupies 167 MB on disk, so both are named.
+    let size = match report.archived {
+        Some(on_disk) => format!(
+            "{} archive  \u{00b7}  {} original",
+            human(on_disk),
+            human(report.file_len)
+        ),
+        None => human(report.file_len),
+    };
     println!(
         "{}  {}",
         bold(&format!("\u{25B8} {name}")),
-        faint(&format!(
-            "{}  \u{00b7}  {} tags",
-            human(report.file_len),
-            report.field_count()
-        ))
+        faint(&format!("{size}  \u{00b7}  {} tags", report.field_count()))
     );
 
     if items.is_empty() {
@@ -868,9 +875,12 @@ fn faint(s: &str) -> String {
 /// restore — you can inspect an archived library without unpacking it.
 fn read_metadata(path: &Path, opts: &blad_meta::Options) -> Result<blad_meta::Report> {
     if blad_archive::is_archive(path) {
+        let on_disk = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         let mut sk = blad_archive::skeleton(path)?;
         let len = sk.original_len();
-        return Ok(blad_meta::read_from(&mut sk, len, opts)?);
+        let mut report = blad_meta::read_from(&mut sk, len, opts)?;
+        report.archived = Some(on_disk);
+        return Ok(report);
     }
     Ok(blad_meta::read(path, opts)?)
 }

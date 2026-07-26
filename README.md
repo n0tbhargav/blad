@@ -181,12 +181,23 @@ emoji, so they take their colour from the terminal palette and go quiet under
 `NO_COLOR`; every one is East-Asian-Width Narrow, so the layout cannot shift on a
 terminal configured for CJK.
 
-**Dynamic range is inferred, and says why.** No TIFF or Exif tag declares "this is HDR".
-What a file does state is its bit depth, sample format and whether the data is
-sensor-linear, so blad reports the inference with its evidence — `high — 16-bit linear
-sensor data`, `standard — 8-bit, display-referred`, `floating point — scene-linear,
-unbounded`. Deliberately no stop count: bit depth bounds what can be *encoded*, and the
-sensor's real range is not in any tag.
+**HDR is read from the ICC profile.** Nothing in TIFF or Exif distinguishes a BT.2100 PQ
+master from an sRGB export — both are 16-bit RGB with identical tags. The signal is the
+ICC v4.4 `cicp` tag *inside* the embedded profile, which most tools treat as an opaque
+blob:
+
+```
+  ◨  Dynamic   HDR — PQ (SMPTE ST 2084) · BT.2020 / BT.2100
+  ✦  Colour    ICC: Rec. ITU-R BT.2100 PQ
+```
+
+Worth noting that lcms2 — the colour engine behind Firefox, GIMP, darktable, Krita,
+ImageMagick and Pillow — has no concept of CICP, PQ or HLG at all.
+
+Without a profile, dynamic range is inferred from bit depth, sample format and whether
+the data is sensor-linear, and the reasoning is shown: `high — 16-bit linear sensor
+data`, `standard — 8-bit, display-referred`. Deliberately no stop count: bit depth
+bounds what can be *encoded*, and the sensor's real range is not in any tag.
 
 `--full` gives every directory entry under its standard tag name, as a table, which is
 the view for debugging a file:

@@ -19,6 +19,7 @@
 use blad_container::ifd::{self, IfdKind};
 
 pub mod geo;
+pub mod icc;
 pub mod summary;
 pub mod tags;
 pub mod value;
@@ -31,6 +32,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// How many array elements to show before truncating.
 const MAX_ITEMS: usize = 8;
+
+/// `InterColorProfile`.
+const TAG_ICC_PROFILE: u16 = 34675;
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
@@ -91,6 +95,18 @@ pub struct Report {
     pub file_len: u64,
     /// Offset of the TIFF header. Non-zero when the metadata came from a JPEG's APP1.
     pub tiff_base: u64,
+    /// The embedded ICC profile, parsed. Present only when the file carries one.
+    ///
+    /// Kept on the report because nothing in TIFF or Exif distinguishes a BT.2100 PQ
+    /// master from an sRGB one — both are 16-bit RGB with identical tags. The answer is
+    /// inside the profile, so treating it as an opaque blob loses it.
+    pub icc: Option<icc::Profile>,
+    /// Size on disk of the archive this was read out of, when it came from one.
+    ///
+    /// `file_len` is then the length of the *original* file, since that is the
+    /// coordinate space the directories describe. Reporting only that would claim a
+    /// 293 MB file where 167 MB sits on disk, so both are kept.
+    pub archived: Option<u64>,
     pub groups: Vec<Group>,
 }
 
@@ -128,6 +144,15 @@ pub fn read_from<R: std::io::Read + std::io::Seek>(
 
 fn build(dirs: &ifd::Directories, opts: &Options) -> Report {
     let mut groups = Vec::new();
+
+    // Parse the ICC profile from the raw entry: `Value` deliberately reduces large
+    // blobs to a byte count, which is right for display and useless here.
+    let icc_profile = dirs
+        .ifds
+        .iter()
+        .flat_map(|i| &i.entries)
+        .find(|e| e.tag == TAG_ICC_PROFILE && e.unreadable.is_none())
+        .and_then(|e| icc::parse(&e.bytes));
 
     for raw in &dirs.ifds {
         let label = raw.kind.label();
@@ -202,6 +227,8 @@ fn build(dirs: &ifd::Directories, opts: &Options) -> Report {
         little_endian: dirs.little_endian,
         file_len: dirs.file_len,
         tiff_base: dirs.tiff_base,
+        icc: icc_profile,
+        archived: None,
         groups,
     }
 }

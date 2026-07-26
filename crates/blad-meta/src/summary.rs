@@ -161,6 +161,12 @@ pub fn human_date(iso: &str) -> String {
     )
 }
 
+/// Hemisphere letter as stored, e.g. `N` or `W`.
+fn hemisphere(r: &Report, ref_tag: &str) -> Option<String> {
+    let h = find(r, ref_tag)?.display.trim().to_uppercase();
+    ["N", "S", "E", "W"].contains(&h.as_str()).then_some(h)
+}
+
 /// Decimal degrees for a GPS coordinate, honouring the hemisphere reference.
 fn coord(r: &Report, value_tag: &str, ref_tag: &str) -> Option<f64> {
     let f = find(r, value_tag)?;
@@ -314,7 +320,20 @@ pub fn summarise(r: &Report) -> Vec<Item> {
         coord(r, "GPSLatitude", "GPSLatitudeRef"),
         coord(r, "GPSLongitude", "GPSLongitudeRef"),
     ) {
-        let mut s = format!("{lat:.4}, {lon:.4}");
+        // Hemisphere letters rather than signs. A leading minus is easy to lose and easy
+        // to misread; "21.9426 W" cannot be mistaken for anything else. The signed
+        // decimals stay in --json for anything doing arithmetic with them.
+        let fmt_one = |v: f64, r_tag: &str, pos: &str, neg: &str| {
+            let letter =
+                hemisphere(r, r_tag)
+                    .unwrap_or_else(|| if v < 0.0 { neg.into() } else { pos.into() });
+            format!("{:.4}\u{b0} {letter}", v.abs())
+        };
+        let mut s = format!(
+            "{}, {}",
+            fmt_one(lat, "GPSLatitudeRef", "N", "S"),
+            fmt_one(lon, "GPSLongitudeRef", "E", "W")
+        );
         if let Some(n) = crate::geo::nearest(lat, lon, 150.0) {
             s.push_str(&format!("  ·  {n}"));
         }
@@ -370,7 +389,13 @@ pub fn summarise(r: &Report) -> Vec<Item> {
         }
         .to_string(),
     );
-    push(Facet::Format, fmt.join("  \u{b7}  "), false);
+    // What you are holding is an archive; what it describes is the original. Showing
+    // only the inner format would hide which of the two is on disk.
+    let fmt = match r.archived {
+        Some(_) => format!("blad archive \u{2192} {}", fmt.join("  \u{b7}  ")),
+        None => fmt.join("  \u{b7}  "),
+    };
+    push(Facet::Format, fmt, false);
 
     if let (Some(w), Some(h)) = (width, height) {
         let mut img = vec![format!("{w} \u{d7} {h}")];
@@ -410,22 +435,55 @@ pub fn summarise(r: &Report) -> Vec<Item> {
 
         // Dynamic range, stated from evidence only.
         //
+        // The ICC profile outranks everything else here. A BT.2100 PQ master and an
+        // sRGB export are both 16-bit RGB with identical TIFF and Exif tags; only the
+        // profile's `cicp` tag tells them apart, and ignoring it made blad call a real
+        // HDR file "no HDR transfer signalled".
+        //
         // No TIFF or Exif tag declares "this is HDR". What the file *does* say is its
         // bit depth, sample format and whether the data is sensor-linear, and those
         // imply the available range. Reporting the inference with its reason is honest;
         // printing a bare "HDR" would not be.
-        let dynamic = match (sample_format, b, is_raw) {
-            (Some(3), _, _) => Some("floating point \u{2014} scene-linear, unbounded".to_string()),
-            // Deliberately no stop count. Bit depth bounds what the file can *encode*;
-            // the sensor's actual dynamic range is a property of the hardware that no
-            // tag records, and a 16-bit container does not mean 16 stops were captured.
-            (_, b, true) if b >= 12 => Some(format!("high \u{2014} {b}-bit linear sensor data")),
-            (_, b, false) if b >= 16 => {
-                Some(format!("wide \u{2014} {b}-bit, no HDR transfer signalled"))
-            }
-            (_, 8, _) => Some("standard \u{2014} 8-bit, display-referred".to_string()),
-            _ => None,
-        };
+        let from_icc = r.icc.as_ref().and_then(|p| {
+            let c = p.cicp?;
+            c.is_hdr().then(|| {
+                format!(
+                    "HDR \u{2014} {} \u{b7} {}",
+                    c.transfer_name(),
+                    c.primaries_name()
+                )
+            })
+        });
+        let from_icc = from_icc.or_else(|| {
+            let p = r.icc.as_ref()?;
+            (p.cicp.is_none() && p.is_hdr()).then(|| {
+                format!(
+                    "HDR \u{2014} {}",
+                    p.description
+                        .as_deref()
+                        .unwrap_or("declared by ICC profile")
+                )
+            })
+        });
+
+        let dynamic = from_icc
+            .map(Some)
+            .unwrap_or_else(|| match (sample_format, b, is_raw) {
+                (Some(3), _, _) => {
+                    Some("floating point \u{2014} scene-linear, unbounded".to_string())
+                }
+                // Deliberately no stop count. Bit depth bounds what the file can *encode*;
+                // the sensor's actual dynamic range is a property of the hardware that no
+                // tag records, and a 16-bit container does not mean 16 stops were captured.
+                (_, b, true) if b >= 12 => {
+                    Some(format!("high \u{2014} {b}-bit linear sensor data"))
+                }
+                (_, b, false) if b >= 16 => {
+                    Some(format!("wide \u{2014} {b}-bit, no HDR transfer signalled"))
+                }
+                (_, 8, _) => Some("standard \u{2014} 8-bit, display-referred".to_string()),
+                _ => None,
+            });
         if let Some(d) = dynamic {
             push(Facet::Dynamic, d, false);
         }
@@ -435,8 +493,16 @@ pub fn summarise(r: &Report) -> Vec<Item> {
     if let Some(c) = text(r, "ColorSpace") {
         colour.push(c.split(" (").next().unwrap_or("").to_string());
     }
-    if find(r, "InterColorProfile").is_some() {
-        colour.push("ICC profile embedded".into());
+    match r.icc.as_ref() {
+        Some(p) => colour.push(match (&p.description, p.cicp) {
+            (Some(d), _) => format!("ICC: {d}"),
+            (None, Some(c)) => format!("ICC: {} \u{b7} {}", c.primaries_name(), c.transfer_name()),
+            _ => "ICC profile embedded".into(),
+        }),
+        None if find(r, "InterColorProfile").is_some() => {
+            colour.push("ICC profile embedded (unreadable)".into())
+        }
+        None => {}
     }
     if find(r, "ColorMatrix1").is_some() {
         colour.push("camera matrix present".into());
@@ -488,6 +554,98 @@ pub fn summarise(r: &Report) -> Vec<Item> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gps_report(
+        lat: [(i64, i64); 3],
+        lat_ref: &str,
+        lon: [(i64, i64); 3],
+        lon_ref: &str,
+    ) -> Report {
+        let f = |tag: u16, name: &'static str, v: Value, display: &str| crate::Field {
+            tag,
+            name: Some(name),
+            kind: crate::Kind::Sensitive,
+            dtype: 5,
+            count: 3,
+            offset: 0,
+            value: v,
+            display: display.to_string(),
+            redacted: false,
+        };
+        Report {
+            little_endian: true,
+            file_len: 1024,
+            tiff_base: 0,
+            icc: None,
+            archived: None,
+            groups: vec![crate::Group {
+                kind: IfdKind::Gps,
+                label: "GPS".into(),
+                offset: 8,
+                fields: vec![
+                    f(1, "GPSLatitudeRef", Value::Text(lat_ref.into()), lat_ref),
+                    f(2, "GPSLatitude", Value::Rational(lat.to_vec()), ""),
+                    f(3, "GPSLongitudeRef", Value::Text(lon_ref.into()), lon_ref),
+                    f(4, "GPSLongitude", Value::Rational(lon.to_vec()), ""),
+                ],
+            }],
+        }
+    }
+
+    /// A leading minus is easy to lose and easy to misread; a hemisphere letter is not.
+    #[test]
+    fn coordinates_use_hemisphere_letters_in_every_quadrant() {
+        let cases = [
+            ("N", "E", "48.8584\u{b0} N", "2.2945\u{b0} E"),
+            ("N", "W", "64.1466\u{b0} N", "21.9426\u{b0} W"),
+            ("S", "E", "33.8568\u{b0} S", "151.2153\u{b0} E"),
+        ];
+        for (lr, lnr, want_lat, want_lon) in cases {
+            let (lat, lon) = match (lr, lnr) {
+                ("N", "E") => (
+                    [(48, 1), (51, 1), (3024, 100)],
+                    [(2, 1), (17, 1), (402, 10)],
+                ),
+                ("N", "W") => (
+                    [(64, 1), (8, 1), (4776, 100)],
+                    [(21, 1), (56, 1), (3336, 100)],
+                ),
+                _ => (
+                    [(33, 1), (51, 1), (2448, 100)],
+                    [(151, 1), (12, 1), (5508, 100)],
+                ),
+            };
+            let r = gps_report(lat, lr, lon, lnr);
+            let items = summarise(&r);
+            let w = items
+                .iter()
+                .find(|i| i.facet == Facet::Where)
+                .expect("no Where");
+            assert!(w.value.contains(want_lat), "{} lacks {want_lat}", w.value);
+            assert!(w.value.contains(want_lon), "{} lacks {want_lon}", w.value);
+            assert!(!w.value.contains('-'), "signed value leaked: {}", w.value);
+        }
+    }
+
+    /// Reading an archive must say so: the directories describe the original, but the
+    /// file on disk is the archive, and confusing the two misreports the size.
+    #[test]
+    fn archives_are_named_in_the_format_facet() {
+        let mut r = gps_report([(0, 1); 3], "N", [(0, 1); 3], "E");
+        r.groups.clear();
+        r.archived = Some(1000);
+        let items = summarise(&r);
+        let f = items
+            .iter()
+            .find(|i| i.facet == Facet::Format)
+            .expect("no Format");
+        assert!(f.value.starts_with("blad archive \u{2192} "), "{}", f.value);
+        assert!(
+            !f.value.contains("\u{2192}  \u{b7}"),
+            "dangling separator: {}",
+            f.value
+        );
+    }
 
     #[test]
     fn aspect_snaps_to_conventional_ratios() {

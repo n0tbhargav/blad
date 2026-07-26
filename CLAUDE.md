@@ -491,10 +491,36 @@ metadata fidelity, GPU backend proven to match the CPU path within a stated tole
    - Format names the container from evidence, not the extension. `Compression = JPEG`
      on a mosaic is rendered "lossless JPEG (LJ92)" — printing bare "JPEG" beside a
      container name reads as though the file were a JPEG.
-   - **Dynamic range is inferred and states its evidence.** No tag declares HDR; bit
-     depth, sample format and sensor-linearity do imply the available range.
-     Deliberately **no stop count** — bit depth bounds what can be encoded, the sensor's
-     real range is hardware and appears in no tag, and "16-bit" is not "16 stops".
+   - **Dynamic range comes from the ICC profile when there is one**, and from bit depth
+     / sample format / sensor-linearity otherwise. Deliberately **no stop count** — bit
+     depth bounds what can be encoded, the sensor's real range is hardware and appears in
+     no tag, and "16-bit" is not "16 stops".
+   - **Coordinates use hemisphere letters** (`21.9426° W`), not signs. A leading minus is
+     easy to lose and easy to misread; signed decimals stay in `--json`.
+   - **Archives say so.** `Format` reads `blad archive → TIFF · …`, and the header names
+     both sizes. `file_len` is the *original's* length because that is the coordinate
+     space the directories describe, so reporting only it claimed 293 MB for a file
+     occupying 167 MB.
+
+7. **`blad-meta::icc` — minimal ICC reading, and the first piece of Phase 1.**
+
+   Prompted by a real file: `hdr.tif`, a BT.2100 PQ master, which blad confidently
+   labelled "no HDR transfer signalled". **Nothing in TIFF or Exif distinguishes a PQ
+   master from an sRGB export** — both are 16-bit RGB with identical tags. The signal is
+   the ICC v4.4 **`cicp`** tag inside the embedded profile, which we were showing as
+   `<opaque, 13.0 KB>`.
+
+   Parses the header, `desc` (v2 ASCII and v4 `mluc` UTF-16BE) and `cicp`; maps H.273
+   transfer codes (16 = PQ/ST 2084, 18 = HLG) and primaries (9 = BT.2020/BT.2100). Falls
+   back to matching standard profile names when a writer omits `cicp`. Hard caps on tag
+   count, and a tag pointing outside the profile is skipped rather than fatal.
+
+   **This is exactly the wedge the plan named:** lcms2 — the colour engine under Firefox,
+   GIMP, darktable, Krita, ImageMagick and Pillow — has no concept of CICP, PQ or HLG.
+   The first user-visible piece of that gap is now closed, and it took ~200 lines.
+
+   Lesson repeated from the memory misattribution: **the classifier was confident and
+   wrong, and only a real file caught it.** Synthetic tests all passed.
 
    Dropped the "contains location or identity data" footer: blad is a tool people point
    at their own photographs, so warning them about their own metadata is noise.
