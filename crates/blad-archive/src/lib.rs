@@ -390,6 +390,11 @@ pub fn thumbnail(archive_path: &Path) -> Result<Vec<u8>> {
 }
 
 /// Parse the trailing footer. Returns `(manifest_len, thumb_len)`.
+/// Read the footer: manifest and thumbnail lengths.
+///
+/// **Not sufficient on its own to identify an archive.** The lengths are only bounds-
+/// checked, and a file ending in sixteen zero bytes passes — a real Hasselblad 3FR does
+/// exactly that. Use [`is_archive`], which also checks the magic.
 fn read_footer(path: &Path) -> Result<(u64, u64)> {
     let mut f = std::fs::File::open(path)?;
     let total = f.metadata()?.len();
@@ -409,6 +414,26 @@ fn read_footer(path: &Path) -> Result<(u64, u64)> {
         return Err(Error::NotAnArchive);
     }
     Ok((manifest_len, thumb_len))
+}
+
+/// Is this one of ours?
+///
+/// An archive opens with a JPEG thumbnail, so it cannot be recognised from its first
+/// bytes; the magic sits after the thumbnail, at an offset the footer declares. Both
+/// have to agree, because either alone gives false positives — the footer is just two
+/// little-endian lengths, and plenty of files end in zeroes.
+pub fn is_archive(path: &Path) -> bool {
+    let Ok((_, thumb_len)) = read_footer(path) else {
+        return false;
+    };
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    if f.seek(SeekFrom::Start(thumb_len)).is_err() {
+        return false;
+    }
+    let mut magic = [0u8; 5];
+    f.read_exact(&mut magic).is_ok() && magic[0..4] == MAGIC[0..4]
 }
 
 /// Result of a successful [`archive`].
@@ -729,6 +754,124 @@ pub fn verify_quick(archive_path: &Path) -> Result<Manifest> {
     Ok(manifest)
 }
 
+/// A `Read + Seek` view of the original file's **skeleton**, addressed in original-file
+/// coordinates, served straight out of the archive.
+///
+/// Metadata lives entirely in verbatim segments — that is what "verbatim" means here,
+/// since image segments hold nothing but pixel samples. So a metadata reader can be
+/// pointed at this and get correct answers without decoding a single blob: reading Exif
+/// from a 56 MB archive costs a few seeks instead of a full JXL decode.
+///
+/// Reads that fall inside an image segment yield zeroes rather than an error. A parser
+/// walking a directory must not be derailed by a pixel region it was never going to
+/// look at, and any offset that genuinely points into pixel data was not metadata.
+pub struct Skeleton {
+    file: std::fs::File,
+    /// `(original_offset, len, archive_offset)` for each verbatim run, in order.
+    runs: Vec<(u64, u64, u64)>,
+    original_len: u64,
+    pos: u64,
+}
+
+impl Skeleton {
+    pub fn original_len(&self) -> u64 {
+        self.original_len
+    }
+}
+
+/// Open an archive's skeleton for reading in original-file coordinates.
+pub fn skeleton(archive_path: &Path) -> Result<Skeleton> {
+    let (manifest, body_off, _) = read_manifest(archive_path)?;
+    let mut runs = Vec::new();
+    let mut archive_pos = body_off;
+
+    for (i, seg) in manifest.layout.segments.iter().enumerate() {
+        match &seg.kind {
+            SegmentKind::Verbatim => {
+                runs.push((seg.src_offset, seg.len, archive_pos));
+                archive_pos += seg.len;
+            }
+            SegmentKind::Image(_) => {
+                // Image blobs are stored compressed, so the archive advances by the
+                // blob length, not by the segment's original length.
+                let stored: u64 = manifest
+                    .blobs
+                    .iter()
+                    .find(|b| b.segment == i)
+                    .map(|b| b.parts.iter().sum())
+                    .unwrap_or(0);
+                archive_pos += stored;
+            }
+        }
+    }
+
+    Ok(Skeleton {
+        file: std::fs::File::open(archive_path)?,
+        runs,
+        original_len: manifest.original.len,
+        pos: 0,
+    })
+}
+
+impl Read for Skeleton {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.pos >= self.original_len || buf.is_empty() {
+            return Ok(0);
+        }
+        let want = (buf.len() as u64).min(self.original_len - self.pos) as usize;
+
+        // Which run covers this position?
+        let hit = self
+            .runs
+            .iter()
+            .find(|(off, len, _)| self.pos >= *off && self.pos < off + len)
+            .copied();
+
+        match hit {
+            Some((off, len, arc)) => {
+                let within = self.pos - off;
+                let n = want.min((len - within) as usize);
+                self.file.seek(SeekFrom::Start(arc + within))?;
+                let n = self.file.read(&mut buf[..n])?;
+                self.pos += n as u64;
+                Ok(n)
+            }
+            None => {
+                // Inside an image segment: hand back zeroes up to the next skeleton run.
+                let next = self
+                    .runs
+                    .iter()
+                    .filter(|(off, _, _)| *off > self.pos)
+                    .map(|(off, _, _)| *off)
+                    .min()
+                    .unwrap_or(self.original_len);
+                let n = want.min((next - self.pos) as usize);
+                buf[..n].fill(0);
+                self.pos += n as u64;
+                Ok(n)
+            }
+        }
+    }
+}
+
+impl Seek for Skeleton {
+    fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+        let p = match from {
+            SeekFrom::Start(n) => n as i64,
+            SeekFrom::End(n) => self.original_len as i64 + n,
+            SeekFrom::Current(n) => self.pos as i64 + n,
+        };
+        if p < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "seek before start of file",
+            ));
+        }
+        self.pos = p as u64;
+        Ok(self.pos)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -998,6 +1141,58 @@ mod tests {
                 _ => panic!("v{v} gave {e:?}, expected a version error"),
             }
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The skeleton must present original-file coordinates, so a metadata parser can
+    /// read an archive without knowing it is one — and without decoding any pixels.
+    #[test]
+    fn skeleton_serves_original_offsets_without_decoding() {
+        let dir = tmp();
+        let src = dir.join("a.tif");
+        let arc = dir.join("a.blad");
+        let bytes = synth_tiff(1024, 1024, 3, 2, 41);
+        std::fs::write(&src, &bytes).unwrap();
+        archive(&src, &arc, &Identity).unwrap();
+
+        let mut sk = skeleton(&arc).unwrap();
+        assert_eq!(sk.original_len(), bytes.len() as u64);
+
+        // The TIFF header and IFD live in the skeleton and must match exactly.
+        let mut head = vec![0u8; 8];
+        sk.seek(SeekFrom::Start(0)).unwrap();
+        sk.read_exact(&mut head).unwrap();
+        assert_eq!(head, bytes[..8]);
+
+        // A read inside the pixel region yields zeroes rather than failing, so a
+        // directory walk is never derailed by data it was not going to look at.
+        let layout = plan(&src).unwrap();
+        let (_, seg, _) = layout.image_segments().next().unwrap();
+        sk.seek(SeekFrom::Start(seg.src_offset + 16)).unwrap();
+        let mut px = [0xAAu8; 8];
+        sk.read_exact(&mut px).unwrap();
+        assert_eq!(px, [0u8; 8]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A file ending in sixteen zero bytes reads as a valid footer. Real Hasselblad
+    /// 3FRs do exactly that, and treating one as an archive made `blad exif` fail on it
+    /// entirely. Detection has to check the magic too.
+    #[test]
+    fn trailing_zeroes_do_not_look_like_an_archive() {
+        let dir = tmp();
+        let f = dir.join("zeros.3fr");
+        let mut bytes = synth_tiff(64, 64, 3, 2, 7);
+        bytes.extend(std::iter::repeat_n(0u8, 32));
+        std::fs::write(&f, &bytes).unwrap();
+        assert!(!is_archive(&f));
+
+        let arc = dir.join("real.blad");
+        let src = dir.join("real.tif");
+        std::fs::write(&src, synth_tiff(1024, 1024, 3, 2, 9)).unwrap();
+        archive(&src, &arc, &Identity).unwrap();
+        assert!(is_archive(&arc));
         std::fs::remove_dir_all(&dir).ok();
     }
 

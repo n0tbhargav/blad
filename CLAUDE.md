@@ -431,6 +431,23 @@ metadata fidelity, GPU backend proven to match the CPU path within a stated tole
    - Verified value-for-value against exiftool, and offsets verified by seeking to them
      in the file: `0x120` really does hold `00000001 0000007D` = 1/125.
 
+   **Inputs: TIFF/raw, JPEG, and blad archives.**
+   - JPEG Exif lives in an APP1 segment holding a complete TIFF structure. Parsed
+     through a `Window` reader rather than teaching the TIFF code about a base offset it
+     would have to add in a dozen places and could forget in one. Reported offsets are
+     file-absolute, so they can be seeked to.
+   - Archives are read through `blad_archive::Skeleton`, a `Read + Seek` view in
+     *original-file* coordinates. Metadata lives entirely in verbatim segments, so this
+     needs no decoding at all: 30 ms on a 166 MB archive, and `--json` output is
+     byte-identical to the original file's. Reads landing inside an image segment return
+     zeroes, so a directory walk is never derailed by pixels it was not going to read.
+
+   **Bug this surfaced: `read_footer` is not an archive test.** It only bounds-checks two
+   little-endian lengths, so any file ending in sixteen zero bytes passes — which real
+   Hasselblad 3FRs do. Using it to sniff made `blad exif` fail outright on the H3D-39II
+   reference file. Now `is_archive()` checks the magic *and* the footer; either alone
+   gives false positives. Covered by a test.
+
    Still excluded: maker notes (opaque), XMP/IPTC internals (opaque), and all *writing*.
 
 6. **Reference-file finding: most 3FRs are LJ92-compressed.** Hasselblad's own sample

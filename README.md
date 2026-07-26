@@ -138,7 +138,7 @@ blad verify <archives>...    prove an archive still restores
 
 blad restore <archive>       write the original back out
 
-blad exif <files>...         read Exif, TIFF and DNG metadata
+blad exif <files>...         read metadata — TIFF, raw, JPEG, or a blad archive
   -g, --group <G>            tiff | sub | exif | gps | interop
   -t, --tag <NAME>           only matching tags, repeatable
   -a, --all                  include tags with no dictionary entry
@@ -174,6 +174,18 @@ rather than being quietly dropped.
 
 `--json` carries the file's own rationals (`[[8192, 19902], …]`) alongside the rounded
 display value, because a colour matrix is something you compute with, not just read.
+
+It reads **TIFF and raw** files, **JPEG** (Exif from the APP1 segment), and **blad
+archives**:
+
+```console
+$ blad exif photo.blad.3FR
+```
+
+An archive reports the *original's* metadata, because metadata lives entirely in
+verbatim segments — so this costs a few seeks rather than a full restore, and the output
+is byte-for-byte what the original file gives. An archived library stays greppable
+without unpacking it.
 
 ExifTool remains the reference for vendor exotica and for *writing*; blad reads the
 standard directories, starts instantly, and is already in your hand.

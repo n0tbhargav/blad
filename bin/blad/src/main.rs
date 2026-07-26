@@ -731,7 +731,7 @@ fn cmd_exif(
     };
 
     for (i, path) in files.iter().enumerate() {
-        let report = blad_meta::read(path, &opts)
+        let report = read_metadata(path, &opts)
             .with_context(|| format!("reading metadata from {}", path.display()))?;
 
         if json {
@@ -745,6 +745,21 @@ fn cmd_exif(
         print_exif(path, &report, offsets, files.len() > 1 || !json);
     }
     Ok(())
+}
+
+/// Metadata from a plain TIFF/raw, a JPEG's APP1 block, or a blad archive.
+///
+/// The archive case is the interesting one: metadata lives entirely in verbatim
+/// segments, so it can be read straight out of the archive in original-file
+/// coordinates. `blad exif photo.blad.3FR` costs a few seeks rather than a full
+/// restore — you can inspect an archived library without unpacking it.
+fn read_metadata(path: &Path, opts: &blad_meta::Options) -> Result<blad_meta::Report> {
+    if blad_archive::is_archive(path) {
+        let mut sk = blad_archive::skeleton(path)?;
+        let len = sk.original_len();
+        return Ok(blad_meta::read_from(&mut sk, len, opts)?);
+    }
+    Ok(blad_meta::read(path, opts)?)
 }
 
 fn print_exif(path: &Path, report: &blad_meta::Report, offsets: bool, _header: bool) {

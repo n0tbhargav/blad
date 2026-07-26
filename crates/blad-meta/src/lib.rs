@@ -87,6 +87,8 @@ pub struct Group {
 pub struct Report {
     pub little_endian: bool,
     pub file_len: u64,
+    /// Offset of the TIFF header. Non-zero when the metadata came from a JPEG's APP1.
+    pub tiff_base: u64,
     pub groups: Vec<Group>,
 }
 
@@ -108,6 +110,17 @@ impl Report {
 
 pub fn read(path: &std::path::Path, opts: &Options) -> Result<Report> {
     let dirs = ifd::read(path)?;
+    Ok(build(&dirs, opts))
+}
+
+/// Read metadata from anything seekable — a file, a JPEG's Exif block, or a blad
+/// archive's skeleton.
+pub fn read_from<R: std::io::Read + std::io::Seek>(
+    src: &mut R,
+    len: u64,
+    opts: &Options,
+) -> Result<Report> {
+    let dirs = ifd::read_from(src, len)?;
     Ok(build(&dirs, opts))
 }
 
@@ -186,6 +199,7 @@ fn build(dirs: &ifd::Directories, opts: &Options) -> Report {
     Report {
         little_endian: dirs.little_endian,
         file_len: dirs.file_len,
+        tiff_base: dirs.tiff_base,
         groups,
     }
 }
@@ -315,6 +329,7 @@ mod tests {
         ifd::Directories {
             little_endian: true,
             file_len: 1024,
+            tiff_base: 0,
             ifds: vec![ifd::RawIfd {
                 kind,
                 offset: 8,

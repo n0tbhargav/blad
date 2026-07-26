@@ -91,6 +91,13 @@ pub struct RawIfd {
 pub struct Directories {
     pub little_endian: bool,
     pub file_len: u64,
+    /// Byte offset of the TIFF header within the file. Zero for a plain TIFF; for a JPEG
+    /// it is where the APP1 Exif block's TIFF header begins.
+    ///
+    /// TIFF offsets are relative to that header, so every offset reported here has the
+    /// base already added — an offset you can seek to directly, which is the only kind
+    /// worth printing.
+    pub tiff_base: u64,
     pub ifds: Vec<RawIfd>,
 }
 
@@ -105,6 +112,109 @@ impl Directories {
     }
 }
 
+/// A `Read + Seek` view of a byte range, presenting it as if it started at zero.
+///
+/// TIFF offsets are relative to the TIFF header. Inside a JPEG that header sits some way
+/// into the file, so the parser is given a window rather than being taught about a base
+/// offset it would have to add in a dozen places and could forget in one.
+pub struct Window<R> {
+    inner: R,
+    base: u64,
+    len: u64,
+    pos: u64,
+}
+
+impl<R: Read + Seek> Window<R> {
+    pub fn new(inner: R, base: u64, len: u64) -> Self {
+        Self {
+            inner,
+            base,
+            len,
+            pos: 0,
+        }
+    }
+}
+
+impl<R: Read + Seek> Read for Window<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.len.saturating_sub(self.pos);
+        if left == 0 {
+            return Ok(0);
+        }
+        let want = buf.len().min(left as usize);
+        self.inner
+            .seek(std::io::SeekFrom::Start(self.base + self.pos))?;
+        let n = self.inner.read(&mut buf[..want])?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl<R: Read + Seek> Seek for Window<R> {
+    fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+        use std::io::SeekFrom::*;
+        let p = match from {
+            Start(n) => n as i64,
+            End(n) => self.len as i64 + n,
+            Current(n) => self.pos as i64 + n,
+        };
+        if p < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "seek before start of window",
+            ));
+        }
+        self.pos = p as u64;
+        Ok(self.pos)
+    }
+}
+
+/// Locate the TIFF header inside a JPEG's APP1 Exif segment.
+///
+/// Returns the offset of the TIFF header and the bytes available after it.
+fn jpeg_exif_window<R: Read + Seek>(src: &mut R, file_len: u64) -> Result<(u64, u64)> {
+    let mut pos = 2u64; // past SOI
+    loop {
+        if pos + 4 > file_len {
+            return Err(malformed("no APP1 Exif segment".into()));
+        }
+        src.seek(std::io::SeekFrom::Start(pos))?;
+        let mut hdr = [0u8; 4];
+        src.read_exact(&mut hdr)
+            .map_err(|_| malformed("truncated JPEG segment header".into()))?;
+        if hdr[0] != 0xFF {
+            return Err(malformed(format!("bad JPEG marker at {pos}")));
+        }
+        let marker = hdr[1];
+        // Start of scan or end of image: entropy-coded data follows, no more metadata.
+        if marker == 0xDA || marker == 0xD9 {
+            return Err(malformed("no APP1 Exif segment before image data".into()));
+        }
+        // Standalone markers carry no length field.
+        if marker == 0x01 || (0xD0..=0xD8).contains(&marker) {
+            pos += 2;
+            continue;
+        }
+        let seg_len = u64::from(u16::from_be_bytes([hdr[2], hdr[3]]));
+        if seg_len < 2 {
+            return Err(malformed(format!(
+                "JPEG segment at {pos} declares {seg_len}"
+            )));
+        }
+        let data = pos + 4;
+        let data_len = seg_len - 2;
+
+        if marker == 0xE1 && data_len > 6 {
+            let mut tag = [0u8; 6];
+            src.seek(std::io::SeekFrom::Start(data))?;
+            if src.read_exact(&mut tag).is_ok() && &tag == b"Exif\0\0" {
+                return Ok((data + 6, data_len - 6));
+            }
+        }
+        pos = data + data_len;
+    }
+}
+
 /// Read every directory in a TIFF-based file.
 pub fn read(path: &Path) -> Result<Directories> {
     let mut f = File::open(path)?;
@@ -113,6 +223,32 @@ pub fn read(path: &Path) -> Result<Directories> {
 }
 
 pub fn read_from<R: Read + Seek>(src: &mut R, file_len: u64) -> Result<Directories> {
+    let mut magic = [0u8; 4];
+    src.seek(std::io::SeekFrom::Start(0))?;
+    src.read_exact(&mut magic)
+        .map_err(|_| Error::UnknownFormat)?;
+
+    // A JPEG keeps its Exif in an APP1 segment holding a complete TIFF structure. Parse
+    // it through a window so the TIFF code needs no knowledge of JPEG at all.
+    if magic[0] == 0xFF && magic[1] == 0xD8 {
+        let (base, len) = jpeg_exif_window(src, file_len)?;
+        let mut w = Window::new(src, base, len);
+        let mut d = read_inner(&mut w, len)?;
+        d.tiff_base = base;
+        d.file_len = file_len;
+        for i in &mut d.ifds {
+            i.offset += base;
+            for e in &mut i.entries {
+                e.value_offset += base;
+            }
+        }
+        return Ok(d);
+    }
+
+    read_inner(src, file_len)
+}
+
+fn read_inner<R: Read + Seek>(src: &mut R, file_len: u64) -> Result<Directories> {
     let mut magic = [0u8; 4];
     src.seek(std::io::SeekFrom::Start(0))?;
     src.read_exact(&mut magic)
@@ -247,6 +383,7 @@ pub fn read_from<R: Read + Seek>(src: &mut R, file_len: u64) -> Result<Directori
     Ok(Directories {
         little_endian,
         file_len,
+        tiff_base: 0,
         ifds,
     })
 }
@@ -320,6 +457,37 @@ mod tests {
         let len = buf.len() as u64;
         let d = read_from(&mut Cursor::new(&buf), len).unwrap();
         assert!(d.ifds[0].entries[0].unreadable.is_some());
+    }
+
+    /// A JPEG keeps Exif in APP1. Offsets must come back file-absolute, not relative to
+    /// the embedded TIFF header, or they cannot be seeked to.
+    #[test]
+    fn jpeg_app1_exif_is_found_and_offsets_are_absolute() {
+        let inner = tiff(&[(271, 2, 3, *b"HB\0\0")]);
+        let mut j = vec![0xFF, 0xD8]; // SOI
+        j.extend([0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00]); // APP0, skipped
+        let payload_len = (inner.len() + 6 + 2) as u16;
+        j.extend([0xFF, 0xE1]);
+        j.extend(payload_len.to_be_bytes());
+        let tiff_base = j.len() as u64 + 6;
+        j.extend(b"Exif\0\0");
+        j.extend(&inner);
+        j.extend([0xFF, 0xD9]);
+
+        let len = j.len() as u64;
+        let d = read_from(&mut Cursor::new(&j), len).unwrap();
+        assert_eq!(d.tiff_base, tiff_base);
+        assert_eq!(d.file_len, len);
+        assert_eq!(d.ifds[0].entries[0].tag, 271);
+        // The IFD sits 8 bytes into the embedded TIFF, reported absolutely.
+        assert_eq!(d.ifds[0].offset, tiff_base + 8);
+    }
+
+    /// A JPEG with no Exif must fail cleanly rather than scanning into entropy data.
+    #[test]
+    fn jpeg_without_exif_is_rejected_at_the_scan_marker() {
+        let j = vec![0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x02, 0xFF, 0xD9];
+        assert!(read_from(&mut Cursor::new(&j), j.len() as u64).is_err());
     }
 
     #[test]
