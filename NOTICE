@@ -1,0 +1,15 @@
+blad bundles third-party data.
+
+City table (crates/blad-meta/data/cities.bin)
+---------------------------------------------
+Derived from the GeoNames geographical database, cities with population
+>= 50,000, reduced to name, country code, coordinates and population.
+
+  Source:  https://www.geonames.org
+  Licence: Creative Commons Attribution 4.0
+           https://creativecommons.org/licenses/by/4.0/
+
+The table is embedded so that reverse geocoding never requires a network
+request. Photo coordinates are frequently someone's home; resolving them
+through a web service would disclose that as a side effect of reading a
+file's metadata.

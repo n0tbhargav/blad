@@ -139,6 +139,7 @@ blad verify <archives>...    prove an archive still restores
 blad restore <archive>       write the original back out
 
 blad exif <files>...         read metadata — TIFF, raw, JPEG, or a blad archive
+  -f, --full                 every tag, as a table (default is a compact summary)
   -g, --group <G>            tiff | sub | exif | gps | interop
   -t, --tag <NAME>           only matching tags, repeatable
   -a, --all                  include tags with no dictionary entry
@@ -156,7 +157,26 @@ Effort 1 costs about 5% ratio for a 3× speedup, which is reasonable for bulk wo
 
 ```console
 $ blad exif photo.3FR
+▸ photo.3FR  105.3 MB  ·  51 tags
 
+  📷  Camera    Hasselblad X1D
+  🔭  Lens      45 mm  (35 mm equivalent)
+  🕐  Shutter   1/125 s  ·  shutter priority
+  🔆  Aperture  f/7.1
+  📊  ISO       400
+  📅  Taken     Monday 9 April 2018, 19:23
+  📍  Where     48.8584, 2.2945  ·  Paris, FR
+  📐  Image     8384 × 6304  ·  16-bit  ·  CFA
+  🎨  Colour    camera matrix present
+  🔬  Sensor    black 256  ·  white 65535  ·  crop 8272 × 6200
+```
+
+The default view answers "what is this photo?" — plain-language keys, not tag names,
+because nobody thinks in `ExposureTime` and `FNumber`. `--full` gives every directory
+entry under its standard tag name, as a table, which is the view for debugging a file:
+
+```console
+$ blad exif photo.3FR --full
 ▨ SubIFD0  @ 0x1C4  (14 tags)
     PhotometricInterpretation  CFA (Bayer mosaic) (32803)
  ⊞  ColorMatrix1                0.493206  -0.083518   0.014067
@@ -164,6 +184,16 @@ $ blad exif photo.3FR
                                -0.113823   0.196107   0.706705
     AsShotNeutral              0.447106, 1, 0.679101
 ```
+
+### Places, without phoning home
+
+GPS coordinates get a nearest-city estimate from an **embedded** table — 12,334 cities,
+no network. Reverse geocoding is normally an HTTP call, which would mean transmitting
+the coordinates of wherever a photo was taken, often someone's home, as a side effect of
+reading a file. A tool shipping `--redact` cannot also leak the thing it redacts.
+
+The distance is always shown once it matters, so the estimate is self-checking:
+`Paris, FR` and `near Ulaanbaatar, MN (210 km)` are both honest, and only one is useful.
 
 Two things separate this from the alternatives. It reaches **SubIFDs**, where raw files
 keep their camera-characterization tags — the Rust Exif crates stop at IFD0, which on a
@@ -263,3 +293,6 @@ pipeline, in the spirit of what FFmpeg is for video.
 ## License
 
 Apache-2.0 OR MIT, at your option.
+
+The bundled city table is derived from [GeoNames](https://www.geonames.org), used under
+CC BY 4.0. See [NOTICE](NOTICE).

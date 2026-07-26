@@ -103,6 +103,9 @@ enum Command {
         /// Values without unit interpretation.
         #[arg(long)]
         raw: bool,
+        /// Every directory entry under its standard tag name, as a table.
+        #[arg(short, long)]
+        full: bool,
         /// Show the file offset and type of every value.
         #[arg(long)]
         offsets: bool,
@@ -135,9 +138,10 @@ fn main() -> Result<()> {
             all,
             redact,
             raw,
+            full,
             offsets,
             json,
-        } => cmd_exif(&files, &group, &tag, all, redact, raw, offsets, json),
+        } => cmd_exif(&files, &group, &tag, all, redact, raw, full, offsets, json),
         Command::Layout { input } => {
             print_layout(&input, &blad_archive::plan(&input)?);
             Ok(())
@@ -730,9 +734,13 @@ fn cmd_exif(
     all: bool,
     redact: bool,
     raw: bool,
+    full: bool,
     offsets: bool,
     json: bool,
 ) -> Result<()> {
+    // Asking for specific tags, directories, offsets or unnamed entries is a request for
+    // the detailed view; making the user also pass --full would be pedantry.
+    let full = full || offsets || all || !groups.is_empty() || !tags.is_empty();
     let opts = blad_meta::Options {
         all,
         redact,
@@ -753,9 +761,100 @@ fn cmd_exif(
         if i > 0 {
             println!();
         }
-        print_exif(path, &report, offsets, files.len() > 1 || !json);
+        if full {
+            print_exif(path, &report, offsets, true);
+        } else {
+            print_summary(path, &report);
+        }
     }
     Ok(())
+}
+
+/// Emoji for a facet. All are East-Asian-Width `Wide`, so they occupy two columns
+/// consistently — unlike most decorative glyphs, which are Ambiguous and misalign on
+/// terminals configured for CJK.
+fn facet_icon(f: blad_meta::summary::Facet) -> (&'static str, Color) {
+    use blad_meta::summary::Facet::*;
+    match f {
+        Camera => ("\u{1F4F7}", Color::Cyan),       // camera
+        Lens => ("\u{1F52D}", Color::Cyan),         // telescope
+        Shutter => ("\u{1F550}", Color::Green),     // clock
+        Aperture => ("\u{1F506}", Color::Green),    // brightness
+        Iso => ("\u{1F4CA}", Color::Green),         // chart
+        Flash => ("\u{26A1}", Color::Yellow),       // zap
+        Taken => ("\u{1F4C5}", Color::Blue),        // calendar
+        Where => ("\u{1F4CD}", Color::Yellow),      // pin
+        Image => ("\u{1F4D0}", Color::Magenta),     // ruler
+        Colour => ("\u{1F3A8}", Color::Magenta),    // palette
+        Sensor => ("\u{1F52C}", Color::Magenta),    // microscope
+        Orientation => ("\u{1F9ED}", Color::Blue),  // compass
+        Software => ("\u{1F4BE}", Color::DarkGrey), // disk
+        Author => ("\u{1F512}", Color::Yellow),     // lock
+    }
+}
+
+/// The default view: a dozen facts, named in plain words.
+fn print_summary(path: &Path, report: &blad_meta::Report) {
+    let items = blad_meta::summary::summarise(report);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+
+    println!(
+        "{}  {}",
+        bold(&format!("\u{25B8} {name}")),
+        faint(&format!(
+            "{}  \u{00b7}  {} tags",
+            human(report.file_len),
+            report.field_count()
+        ))
+    );
+
+    if items.is_empty() {
+        println!("{}", faint("  no recognised metadata \u{2014} try --full"));
+        return;
+    }
+
+    println!();
+    let width = items
+        .iter()
+        .map(|i| i.facet.key().chars().count())
+        .max()
+        .unwrap_or(8);
+
+    for it in &items {
+        let (icon, col) = facet_icon(it.facet);
+        let key = colourise(&format!("{:<width$}", it.facet.key(), width = width), col);
+        let value = if it.sensitive && !it.value.starts_with('<') {
+            colourise(&it.value, Color::Yellow)
+        } else if it.value.starts_with('<') {
+            faint(&it.value)
+        } else {
+            it.value.clone()
+        };
+        println!("  {icon}  {key}  {value}");
+    }
+
+    if blad_meta::summary::has_sensitive(report) {
+        println!(
+            "\n{}",
+            faint("  contains location or identity data \u{2014} --redact to hide it")
+        );
+    }
+}
+
+fn bold(s: &str) -> String {
+    if colour() {
+        format!("\u{1b}[1m{s}\u{1b}[0m")
+    } else {
+        s.to_string()
+    }
+}
+
+fn faint(s: &str) -> String {
+    if colour() {
+        format!("\u{1b}[2m{s}\u{1b}[0m")
+    } else {
+        s.to_string()
+    }
 }
 
 /// Metadata from a plain TIFF/raw, a JPEG's APP1 block, or a blad archive.

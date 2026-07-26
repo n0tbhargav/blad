@@ -18,6 +18,8 @@
 
 use blad_container::ifd::{self, IfdKind};
 
+pub mod geo;
+pub mod summary;
 pub mod tags;
 pub mod value;
 

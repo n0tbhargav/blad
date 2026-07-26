@@ -460,6 +460,27 @@ metadata fidelity, GPU backend proven to match the CPU path within a stated tole
    reference file. Now `is_archive()` checks the magic *and* the footer; either alone
    gives false positives. Covered by a test.
 
+   **Two views.** Default is a compact, opinionated summary — plain-language keys
+   (Camera, Shutter, Aperture, Taken, Where) rather than tag names, because nobody thinks
+   in `ExposureTime`. `--full` is the every-entry table, and is implied by `--offsets`,
+   `--all`, `-g` or `-t`, since asking for those is already asking for detail.
+   `blad-meta::summary` returns semantic `Facet`s; emoji and colour live in the CLI, so
+   the library stays usable from something that is not a terminal — the same
+   mechanism/policy split as everywhere else.
+
+   **Reverse geocoding is offline, on principle.** A 12,334-city GeoNames table
+   (pop ≥ 50,000, CC BY 4.0, ~290 KB) is embedded. Doing it over HTTP would transmit the
+   coordinates of wherever a photo was taken — frequently someone's home — as a side
+   effect of reading a file. A tool that ships `--redact` cannot also leak what it
+   redacts. Selection is nearest-match, except that a place ≥4× larger within +8 km wins:
+   the nearest record to the Eiffel Tower is an arrondissement, and people say "Paris".
+   Both halves matter — distance alone returns the subdivision, population alone
+   relabels Cambridge as London. The distance is always shown once above 5 km, so the
+   estimate documents its own reliability.
+
+   Emoji are all East-Asian-Width **Wide**, which is consistent across terminals, unlike
+   the Ambiguous glyphs that caused the earlier alignment problem. Binary grew to 8.0 MB.
+
    Still excluded: maker notes (opaque), XMP/IPTC internals (opaque), and all *writing*.
 
 6. **Reference-file finding: most 3FRs are LJ92-compressed.** Hasselblad's own sample
