@@ -478,6 +478,21 @@ metadata fidelity, GPU backend proven to match the CPU path within a stated tole
    relabels Cambridge as London. The distance is always shown once above 5 km, so the
    estimate documents its own reliability.
 
+   **Value hierarchy, not punctuation.** `summary::Item` carries `parts: Vec<String>` —
+   primary first, qualifiers after — rather than one pre-joined string, so the renderer
+   shows the answer at full strength with its qualifications receding. A library
+   returning one joined string would force the separator choice on every consumer. The
+   separator is dim too, so it organises without competing: a row of bright dots between
+   every field is the same clutter as a column of glyphs marking the common case.
+
+   The separator is U+2219, **not** the usual U+00B7 — the middle dot is
+   East-Asian-Width Ambiguous, the exact bug fixed once in the glyph set and then quietly
+   reintroduced in every separator. Auditing the rendered output for Ambiguous characters
+   also caught `type_note` (`RATIONAL × 1` lands in an aligned column, now `RATIONAL[1]`)
+   and the truncation ellipsis (U+2026 to U+22EF). What remains is the table rule and the
+   block bar, both full-width decoration where doubling is cosmetic rather than
+   misaligning.
+
    **Monochrome text glyphs, not emoji.** Emoji were tried and replaced: they carry their
    own colour and a terminal-chosen typeface, which fights the palette and stays
    stubbornly bright under `NO_COLOR`. The current marks take colour from the same ANSI
