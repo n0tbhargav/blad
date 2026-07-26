@@ -734,6 +734,52 @@ Three decisions worth keeping:
 `now_utc()` is Howard Hinnant's civil-from-days rather than a date dependency — twelve
 lines against a crate, for one timestamp.
 
+### REVISED 2026-07-26: Phase 1 is no longer a gap
+
+A second prior-art check, prompted by "what should we target next", found the colour/HDR
+wedge substantially occupied — and by crates updated the same week:
+
+| the plan said missing | actually exists | downloads | updated |
+|---|---|---|---|
+| ICC v2/v4, CICP, PQ/HLG | `moxcms` | 52.5M | 2026-07-22 |
+| HDR tone mapping ("the libplacebo capability") | `gainforge`, same author | 6.3k | 2026-07-22 |
+| gain maps (Apple / Ultra HDR / ISO 21496-1) | `ultrahdr-core` (imazen) | 19k | 2026-07-24 |
+| raw decode | `rawler` 96k, `rawloader` 308k, `libraw-rs` | | active |
+| demosaic | `bayer` 543k | | |
+
+**Building a colour engine now means competing from behind with an actively maintained
+ecosystem.** The moxcms lesson, applied twice more: depend, do not compete. What remains
+genuinely unclaimed in that space is DCP camera characterization, and that is only worth
+anything inside a raw pipeline — Phase 2/3, not a standalone deliverable.
+
+**The inversion:** what looked like a detour is the moat. Byte-exact archival still has
+no competitor, and the measurements that back it are ours. The strategy is therefore to
+go *deeper* on Phase 0 rather than broader into a space that closed while we were
+building it.
+
+**Highest-leverage next work, in order:**
+
+1. **JPEG archival via libjxl's lossless transcode.** `JxlEncoderAddJPEGFrame` and
+   `JxlDecoderSetJPEGBuffer` are in `jpegxl-sys`, which we already link. Measured with
+   the vendored codec: an 798,826-byte JPEG becomes 661,447 bytes and reconstructs
+   **byte-identically** — ratio **0.828**. The hard part, bitstream reconstruction, is
+   done and shipped in the library we build from source. Everyone owns orders of
+   magnitude more JPEGs than raws, so this is the largest reachable audience for the
+   thing blad is already best at, at the lowest cost. Fits the architecture exactly: one
+   more `SegmentKind`.
+2. **LJ92 byte-exact recompression** for compressed raw (CR2, NEF, compressed DNG, and
+   most 3FRs — all three Hasselblad reference files archive at 1.000 today). Harder, and
+   the honest gain is smaller than the headline: LJ92 already compresses, so JXL's
+   advantage over it is perhaps 15-25%, not the 47% we get from uncompressed. Still the
+   difference between working on the raws people own and not.
+3. **Not** a colour engine. Revisit only as a consumer of moxcms/gainforge when there is
+   a pipeline to put them in.
+
+**Drift worth naming:** the stretch before this was CLI breadth — geocoding, glyph
+widths, summary polish. Good work, none of it on the critical path. The ICC/CICP and
+tone-mapping code was the exception, and its main value turns out to be that it made the
+above prior-art check obvious rather than that it seeded a product.
+
 ### Crate layout
 
 ```
