@@ -30,9 +30,11 @@ lossless", not "same pixels, new container" — the same SHA-256.
 
 ## Install
 
-### Prebuilt binaries — macOS only
+### Prebuilt binary — Apple Silicon macOS only
 
-Download from [Releases](https://github.com/n0tbhargav/blad/releases). Verify before use:
+One artifact: `aarch64-apple-darwin`. It is the only target this project builds *and*
+runs before release, and shipping a binary nobody has executed would contradict the one
+thing blad claims. Verify before use:
 
 ```console
 $ shasum -a 256 -c SHA256SUMS --ignore-missing
@@ -44,15 +46,13 @@ $ ./blad-*/blad --version
 libjxl is vendored and statically linked, so the binary depends only on `libSystem`,
 `libc++` and `libiconv` — nothing to install alongside it.
 
-**Linux and Windows: build from source.** Those binaries are not published, because they
-would be cross-compiled on a Mac and shipped without ever having been executed. For a
-tool whose whole claim is that bytes are what they say they are, an untested binary is
-the wrong thing to hand someone. The build works on both — it just has to be your
-machine that proves it.
+**Intel macOS, Linux and Windows: build from source.** All three compile — Intel macOS
+cross-compiles from Apple Silicon in under a minute — but none of them can be *run*
+here, so none are published. The build is expected to work on all of them; it just has
+to be your machine that proves it.
 
-The `aarch64` build is tested on real Hasselblad files before release. The `x86_64`
-build is cross-compiled from Apple Silicon, so it is the weaker artifact — prefer
-building from source on an Intel Mac if that matters to you.
+The published `aarch64` binary is tested against real Hasselblad files, not merely
+compiled, before every release.
 
 ### From source
 
@@ -197,8 +197,8 @@ At 0.1.0 the format gets a written compatibility guarantee and blad gains the ab
 read older versions. Until then, treat archives as reproducible outputs rather than as
 masters.
 
-Tested on macOS ARM64 against real Hasselblad files. Linux is expected to work but is
-not currently verified; Windows compiles but is unproven.
+Tested on Apple Silicon macOS against real Hasselblad files. Intel macOS, Linux and
+Windows compile but are unverified — no machine here can run them.
 
 ## Status
 

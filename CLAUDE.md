@@ -418,7 +418,11 @@ metadata fidelity, GPU backend proven to match the CPU path within a stated tole
 
 ### Release policy (2026-07-25)
 
-**Binaries: macOS only, built locally, uploaded by hand. No GitHub Actions.**
+**Binaries: Apple Silicon macOS only, built locally, uploaded by hand. No GitHub
+Actions.** One artifact, `aarch64-apple-darwin`, because it is the only target that can
+be *run* here. An Intel build was cross-compiled and briefly published, then pulled: it
+had never been executed, and "we compiled it" is not the standard this project sets for
+anything else.
 
 CI was set up across five targets and then removed the same day. It never produced a
 single result — runs sat queued for 12+ minutes on the free public-repo pool, macOS
@@ -435,12 +439,11 @@ cap). Private would be $0.006/min Linux, $0.010 Windows, **$0.062 macOS** — th
 legs would be essentially the whole bill. Cost was never the reason to drop it; latency
 was.
 
-**Linux and Windows binaries are deliberately not published.** A Mac can cross-compile
-to both (`x86_64-apple-darwin` builds in 43s, Linux needs Docker/cross which is not
-installed), but it cannot *run* either — this machine does not even have Rosetta, so the
-Intel macOS binary ships having never been executed. For a tool whose entire claim is
-byte-exactness, shipping an unexecuted binary is the wrong trade. Users on those
-platforms build from source, which works.
+**Everything else is build-from-source.** A Mac can cross-compile to Intel macOS in 43s;
+Linux needs Docker/cross, which is not installed. But it cannot *run* either — this
+machine does not even have Rosetta. The rule that settles it: **publish only binaries
+that have been executed on real files.** For a tool whose entire claim is byte-exactness,
+an unexecuted artifact is the wrong trade, and "it compiled" is not evidence.
 
 Portability work that survived the CI experiment (worth keeping regardless):
 
