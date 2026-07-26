@@ -83,7 +83,7 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
 name = "blad"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "blad-archive",
@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "blad-archive"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "blad-cfa",
  "blad-codec",
@@ -116,14 +116,14 @@ dependencies = [
 
 [[package]]
 name = "blad-cfa"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "blad-codec"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "bytemuck",
  "jpegxl-rs",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "blad-container"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "serde",
  "thiserror",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "blad-mem"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "libc",
  "windows-sys 0.59.0",
@@ -149,14 +149,14 @@ dependencies = [
 
 [[package]]
 name = "blad-meta"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "blad-container",
 ]
 
 [[package]]
 name = "blad-parity"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "reed-solomon-erasure",
  "thiserror",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "blad-thumb"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "jpeg-encoder",
  "thiserror",
