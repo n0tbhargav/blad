@@ -1,6 +1,5 @@
 # blad
 
-[![ci](https://github.com/n0tbhargav/blad/actions/workflows/ci.yml/badge.svg)](https://github.com/n0tbhargav/blad/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/blad.svg)](https://crates.io/crates/blad)
 [![license](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#license)
 
@@ -31,24 +30,29 @@ lossless", not "same pixels, new container" — the same SHA-256.
 
 ## Install
 
-### Prebuilt binaries
+### Prebuilt binaries — macOS only
 
-Download from [Releases](https://github.com/n0tbhargav/blad/releases) — Linux and macOS,
-x86-64 and ARM64. Verify before use:
+Download from [Releases](https://github.com/n0tbhargav/blad/releases). Verify before use:
 
 ```console
-$ sha256sum -c SHA256SUMS --ignore-missing
-$ tar -xzf blad-*-aarch64-apple-darwin.tar.gz
+$ shasum -a 256 -c SHA256SUMS --ignore-missing
+$ tar -xzf blad-v0.0.1-aarch64-apple-darwin.tar.gz
+$ xattr -d com.apple.quarantine blad-*/blad     # unsigned; Gatekeeper quarantines it
 $ ./blad-*/blad --version
 ```
 
-libjxl is vendored and statically linked, so the binary needs nothing installed
-alongside it. Linux builds link the host glibc (Ubuntu 24.04); on older distributions,
-build from source.
+libjxl is vendored and statically linked, so the binary depends only on `libSystem`,
+`libc++` and `libiconv` — nothing to install alongside it.
 
-macOS binaries are unsigned. Gatekeeper will quarantine a downloaded binary — clear it
-with `xattr -d com.apple.quarantine ./blad`, or build from source if you would rather
-not.
+**Linux and Windows: build from source.** Those binaries are not published, because they
+would be cross-compiled on a Mac and shipped without ever having been executed. For a
+tool whose whole claim is that bytes are what they say they are, an untested binary is
+the wrong thing to hand someone. The build works on both — it just has to be your
+machine that proves it.
+
+The `aarch64` build is tested on real Hasselblad files before release. The `x86_64`
+build is cross-compiled from Apple Silicon, so it is the weaker artifact — prefer
+building from source on an Intel Mac if that matters to you.
 
 ### From source
 
@@ -193,7 +197,8 @@ At 0.1.0 the format gets a written compatibility guarantee and blad gains the ab
 read older versions. Until then, treat archives as reproducible outputs rather than as
 masters.
 
-Tested on Linux and macOS, x86-64 and ARM64, in CI. Windows builds are not yet passing.
+Tested on macOS ARM64 against real Hasselblad files. Linux is expected to work but is
+not currently verified; Windows compiles but is unproven.
 
 ## Status
 

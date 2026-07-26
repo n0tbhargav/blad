@@ -416,36 +416,54 @@ metadata fidelity, GPU backend proven to match the CPU path within a stated tole
    data is already compressed. More tractable than general JPEG — predictive coding plus
    Huffman, no DCT or quantisation tables.
 
-### CI and release policy (2026-07-25)
+### Release policy (2026-07-25)
 
-`.github/workflows/ci.yml` builds and tests on five targets — linux x86_64/aarch64,
-macos aarch64/x86_64, windows x86_64 — plus a `fmt + clippy` job with
-`RUSTFLAGS: -D warnings`. Windows is marked `experimental` and allowed to fail until it
-passes once, so a known-unknown does not read as a regression.
+**Binaries: macOS only, built locally, uploaded by hand. No GitHub Actions.**
 
-**No release binaries yet, deliberately.** A prebuilt binary is a promise that archives
-made with it stay readable, and the format has changed four times in a week. Publishing
-binaries before the format is frozen invites exactly the failure mode an archival tool
-cannot have: someone's archive unreadable by the next version. Ship binaries at **0.1.0**,
-gated on a written format-stability guarantee and a `blad` refusal path for archives whose
-format version it does not know.
+CI was set up across five targets and then removed the same day. It never produced a
+single result — runs sat queued for 12+ minutes on the free public-repo pool, macOS
+worst — while the one portability bug it was meant to catch (`blad-mem` being unix-only)
+was found locally in seconds with `cargo check --target x86_64-pc-windows-msvc`. A
+backstop that is slower than the thing it backs up is not a backstop.
 
-Portability work that CI forced out into the open:
+What replaced it: `cargo build --target` for each macOS arch, the full test suite plus a
+real 3FR round trip on the native one, `tar` + `shasum`, `gh release create`. About two
+minutes.
+
+Cost, for the record: Actions is **free** on public repos (standard runners, no minute
+cap). Private would be $0.006/min Linux, $0.010 Windows, **$0.062 macOS** — the macOS
+legs would be essentially the whole bill. Cost was never the reason to drop it; latency
+was.
+
+**Linux and Windows binaries are deliberately not published.** A Mac can cross-compile
+to both (`x86_64-apple-darwin` builds in 43s, Linux needs Docker/cross which is not
+installed), but it cannot *run* either — this machine does not even have Rosetta, so the
+Intel macOS binary ships having never been executed. For a tool whose entire claim is
+byte-exactness, shipping an unexecuted binary is the wrong trade. Users on those
+platforms build from source, which works.
+
+Portability work that survived the CI experiment (worth keeping regardless):
 
 - `blad-mem` was unix-only. `getrusage` is now `#[cfg(unix)]`, with a Windows
   `K32GetProcessMemoryInfo`/`PeakWorkingSetSize` path (already bytes — no unit trap on
   that side) and a zero-returning fallback elsewhere. Instrumentation must never be
   load-bearing, so an unknown target degrades `--stats` rather than failing to build.
-  `libc` and `windows-sys` are now target-gated dependencies rather than unconditional.
+  `libc` and `windows-sys` are target-gated dependencies now.
 - Clippy under `-D warnings` flagged the `Codec` trait's 8-argument `encode`/`decode`.
   Replaced with a `Frame` descriptor (`width`, `height`, `channels`, `depth`,
-  `little_endian`) passed to **both** halves. That is a correctness argument, not tidiness:
-  a round trip whose two sides disagree about endianness or depth does not fail loudly, it
+  `little_endian`) passed to **both** halves. A correctness argument, not tidiness: a
+  round trip whose two sides disagree about endianness or depth does not fail loudly, it
   silently produces wrong pixels. One value passed to both cannot disagree. The test
-  mock's implementation dropped from 22 lines to 6.
+  mock dropped from 22 lines to 6.
+- Format version is now **exact-match** in both directions. Accepting an older version
+  would parse it at v4 offsets and surface as "corrupt", sending someone after a codec
+  bug that does not exist; `PastVersion` says what actually happened.
+- `LICENSE-APACHE` and `LICENSE-MIT` added — the manifests had claimed
+  `Apache-2.0 OR MIT` since the first commit with no files behind it.
 
-Verified after the refactor: the real 3FR still archives to 0.530 and restores
-byte-identically, 48 tests green.
+**crates.io note:** 0.0.1 was published before any of the above. crates.io versions are
+immutable and cannot be replaced, so the published 0.0.1 is *older* than the v0.0.1 tag.
+Do not publish again until the next version number; when publishing, bump first.
 
 ### Crate layout
 
