@@ -135,8 +135,9 @@ pub fn plan(protected_len: u64, cfg: &Config) -> Result<Plan> {
     let shard_count = (protected_len as usize).div_ceil(cfg.shard_size).max(1);
     let stripes = shard_count.div_ceil(cfg.data_shards);
     let parity_bytes = stripes * cfg.parity_shards * cfg.shard_size;
-    // Header and CRC table are stored twice; see the module note on circularity.
-    let meta = HEADER_LEN + shard_count * 4;
+    // Header and CRC tables are stored twice; see the module note on circularity.
+    // Both data *and* parity shards are checksummed — see `Section::parity_crcs`.
+    let meta = HEADER_LEN + (shard_count + stripes * cfg.parity_shards) * 4;
     Ok(Plan {
         shard_count,
         stripes,
@@ -189,6 +190,7 @@ pub fn encode<R: Read + Seek>(src: &mut R, protected_len: u64, cfg: &Config) -> 
     src.seek(SeekFrom::Start(0))?;
 
     let mut crcs: Vec<u32> = Vec::with_capacity(p.shard_count);
+    let mut parity_crcs: Vec<u32> = Vec::with_capacity(p.stripes * cfg.parity_shards);
     let mut parity_out: Vec<u8> = Vec::with_capacity(p.parity_bytes);
     let mut remaining = protected_len as usize;
 
@@ -214,12 +216,13 @@ pub fn encode<R: Read + Seek>(src: &mut R, protected_len: u64, cfg: &Config) -> 
         r.encode(&mut shards)
             .map_err(|e| Error::Rs(e.to_string()))?;
         for s in shards.iter().skip(cfg.data_shards) {
+            parity_crcs.push(crc32(s));
             parity_out.extend_from_slice(s);
         }
     }
     crcs.truncate(p.shard_count);
 
-    let mut meta = Vec::with_capacity(HEADER_LEN + crcs.len() * 4);
+    let mut meta = Vec::with_capacity(HEADER_LEN + (crcs.len() + parity_crcs.len()) * 4);
     meta.extend_from_slice(SECTION_MAGIC);
     meta.push(SECTION_VERSION);
     meta.push(0);
@@ -228,7 +231,7 @@ pub fn encode<R: Read + Seek>(src: &mut R, protected_len: u64, cfg: &Config) -> 
     meta.extend_from_slice(&(cfg.shard_size as u32).to_le_bytes());
     meta.extend_from_slice(&protected_len.to_le_bytes());
     meta.extend_from_slice(&(p.shard_count as u32).to_le_bytes());
-    for c in &crcs {
+    for c in crcs.iter().chain(parity_crcs.iter()) {
         meta.extend_from_slice(&c.to_le_bytes());
     }
 
@@ -246,6 +249,12 @@ pub struct Section {
     pub cfg: Config,
     pub protected_len: u64,
     pub crcs: Vec<u32>,
+    /// One per parity shard, stripe-major.
+    ///
+    /// Without these a corrupted recovery shard is fed to the decoder as though it were
+    /// sound, and reconstruction produces confident rubbish. Checksumming them turns
+    /// that into one more erasure, which is what it actually is.
+    pub parity_crcs: Vec<u32>,
     /// Offset of the parity shards within the section.
     pub parity_offset: usize,
 }
@@ -313,32 +322,43 @@ fn parse_meta(b: &[u8], at: usize) -> Result<(Section, usize)> {
     if shard_count != (protected_len as usize).div_ceil(cfg.shard_size).max(1) {
         return Err(Error::Malformed("shard count disagrees with length".into()));
     }
-    let crcs = b[HEADER_LEN..want]
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
-        .collect();
+    let stripes = shard_count.div_ceil(cfg.data_shards);
+    let parity_count = stripes * cfg.parity_shards;
+    let want_all = want + parity_count * 4;
+    if b.len() < want_all {
+        return Err(Error::Malformed("parity crc table truncated".into()));
+    }
+    let read = |from: usize, to: usize| -> Vec<u32> {
+        b[from..to]
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .collect()
+    };
     Ok((
         Section {
             cfg,
             protected_len,
-            crcs,
+            crcs: read(HEADER_LEN, want),
+            parity_crcs: read(want, want_all),
             parity_offset: 0,
         },
-        want,
+        want_all,
     ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Scan {
-    /// Shards whose CRC did not match, in file order.
+    /// Data shards whose CRC did not match, in file order.
     pub damaged: Vec<usize>,
+    /// Parity shards whose CRC did not match, stripe-major.
+    pub damaged_parity: Vec<usize>,
     /// Stripes holding more damage than the parity can undo.
     pub unrepairable_stripes: Vec<usize>,
 }
 
 impl Scan {
     pub fn is_clean(&self) -> bool {
-        self.damaged.is_empty()
+        self.damaged.is_empty() && self.damaged_parity.is_empty()
     }
     pub fn is_repairable(&self) -> bool {
         self.unrepairable_stripes.is_empty()
@@ -350,7 +370,7 @@ impl Scan {
 /// Never writes. Separated from repair so that a dry run can answer the question that
 /// actually matters — *can* this be fixed — rather than merely reporting that something
 /// is wrong and leaving the user to find out by trying.
-pub fn scan<F: Read + Seek>(file: &mut F, section: &Section) -> Result<Scan> {
+pub fn scan<F: Read + Seek>(file: &mut F, section: &Section, parity: &[u8]) -> Result<Scan> {
     let cfg = &section.cfg;
     let mut out = Scan::default();
 
@@ -372,7 +392,27 @@ pub fn scan<F: Read + Seek>(file: &mut F, section: &Section) -> Result<Scan> {
                 bad += 1;
             }
         }
-        if bad > cfg.parity_shards {
+        // A damaged recovery shard is a lost shard like any other: it cannot be used to
+        // rebuild, and it counts against the same budget.
+        let mut bad_parity = 0usize;
+        for s in 0..cfg.parity_shards {
+            let n = stripe * cfg.parity_shards + s;
+            let at = section.parity_offset + n * cfg.shard_size;
+            let ok = match (
+                parity.get(at..at + cfg.shard_size),
+                section.parity_crcs.get(n),
+            ) {
+                (Some(p), Some(&want)) => crc32(p) == want,
+                _ => false,
+            };
+            if !ok {
+                out.damaged_parity.push(n);
+                bad_parity += 1;
+            }
+        }
+
+        // k of the k+m shards must survive, so total losses may not exceed m.
+        if bad + bad_parity > cfg.parity_shards {
             out.unrepairable_stripes.push(stripe);
         }
     }
@@ -382,12 +422,18 @@ pub fn scan<F: Read + Seek>(file: &mut F, section: &Section) -> Result<Scan> {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Report {
     pub damaged: Vec<usize>,
+    pub damaged_parity: Vec<usize>,
     pub repaired: Vec<usize>,
+    pub repaired_parity: Vec<usize>,
 }
 
 impl Report {
     pub fn is_clean(&self) -> bool {
-        self.damaged.is_empty()
+        self.damaged.is_empty() && self.damaged_parity.is_empty()
+    }
+
+    pub fn total_damaged(&self) -> usize {
+        self.damaged.len() + self.damaged_parity.len()
     }
 }
 
@@ -402,21 +448,32 @@ pub fn check<F: Read + Seek + Write>(
     section: &Section,
     parity: &[u8],
     repair: bool,
+    section_at: Option<u64>,
 ) -> Result<Report> {
     let cfg = &section.cfg;
-    let found = scan(file, section)?;
+    let found = scan(file, section, parity)?;
     let mut report = Report {
         damaged: found.damaged.clone(),
+        damaged_parity: found.damaged_parity.clone(),
         repaired: Vec::new(),
+        repaired_parity: Vec::new(),
     };
     if found.is_clean() {
         return Ok(report);
     }
     if !found.is_repairable() {
         return Err(Error::Unrepairable(format!(
-            "{} stripe(s) lost more than the {} shard(s) parity covers",
+            "{} stripe(s) lost more than the {} shard(s) parity covers{}",
             found.unrepairable_stripes.len(),
-            cfg.parity_shards
+            cfg.parity_shards,
+            if found.damaged_parity.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " ({} recovery shard(s) were themselves damaged)",
+                    found.damaged_parity.len()
+                )
+            }
         )));
     }
     if !repair {
@@ -426,12 +483,18 @@ pub fn check<F: Read + Seek + Write>(
     let r = rs(cfg)?;
     let damaged: std::collections::BTreeSet<usize> = found.damaged.iter().copied().collect();
 
+    let damaged_par: std::collections::BTreeSet<usize> =
+        found.damaged_parity.iter().copied().collect();
+
     for stripe in 0..section.stripes() {
         let base = stripe * cfg.data_shards;
         let bad_in_stripe: Vec<usize> = (0..cfg.data_shards)
             .filter(|j| damaged.contains(&(base + j)))
             .collect();
-        if bad_in_stripe.is_empty() {
+        let bad_parity: Vec<usize> = (0..cfg.parity_shards)
+            .filter(|s| damaged_par.contains(&(stripe * cfg.parity_shards + s)))
+            .collect();
+        if bad_in_stripe.is_empty() && bad_parity.is_empty() {
             continue;
         }
 
@@ -455,9 +518,19 @@ pub fn check<F: Read + Seek + Write>(
             shards.push(Some(buf));
         }
         for s in 0..cfg.parity_shards {
-            let at = section.parity_offset + (stripe * cfg.parity_shards + s) * cfg.shard_size;
-            // Damaged parity is another erasure, not a reason to give up.
-            shards.push(parity.get(at..at + cfg.shard_size).map(|p| p.to_vec()));
+            let n = stripe * cfg.parity_shards + s;
+            let at = section.parity_offset + n * cfg.shard_size;
+            // A recovery shard is used only if it proves itself, exactly like a data
+            // shard. Trusting one that failed its CRC is how a decode that "succeeds"
+            // produces bytes that are wrong.
+            let good = match (
+                parity.get(at..at + cfg.shard_size),
+                section.parity_crcs.get(n),
+            ) {
+                (Some(p), Some(&want)) if crc32(p) == want => Some(p.to_vec()),
+                _ => None,
+            };
+            shards.push(good);
         }
 
         r.reconstruct(&mut shards)
@@ -476,6 +549,23 @@ pub fn check<F: Read + Seek + Write>(
             file.seek(SeekFrom::Start(off))?;
             file.write_all(&data[..want])?;
             report.repaired.push(idx);
+        }
+
+        // Rebuild damaged recovery shards as well. Leaving them broken would let
+        // protection erode silently: the data reads fine today, while the margin that
+        // would save it next time has quietly gone.
+        if let Some(at) = section_at {
+            for s in bad_parity {
+                let n = stripe * cfg.parity_shards + s;
+                let data = shards[cfg.data_shards + s].as_ref().expect("reconstructed");
+                if section.parity_crcs.get(n) != Some(&crc32(data)) {
+                    continue;
+                }
+                let off = at + (section.parity_offset + n * cfg.shard_size) as u64;
+                file.seek(SeekFrom::Start(off))?;
+                file.write_all(data)?;
+                report.repaired_parity.push(n);
+            }
         }
     }
     file.flush()?;
@@ -521,7 +611,8 @@ mod tests {
         assert_eq!(p.shard_count, 3);
         assert_eq!(p.stripes, 1);
         assert_eq!(p.parity_bytes, 2 * 128);
-        assert_eq!(p.section_len, (HEADER_LEN + 3 * 4) * 2 + 256);
+        // Three data CRCs plus two parity CRCs, and the metadata is stored twice.
+        assert_eq!(p.section_len, (HEADER_LEN + (3 + 2) * 4) * 2 + 256);
     }
 
     #[test]
@@ -533,7 +624,7 @@ mod tests {
         assert_eq!(parsed.protected_len, 1000);
 
         let mut f = Cursor::new(d.clone());
-        let rep = check(&mut f, &parsed, &sec, false).unwrap();
+        let rep = check(&mut f, &parsed, &sec, false, None).unwrap();
         assert!(rep.is_clean(), "clean data reported damage: {rep:?}");
     }
 
@@ -550,7 +641,7 @@ mod tests {
         broken[201] ^= 0x0F;
 
         let mut f = Cursor::new(broken);
-        let rep = check(&mut f, &parsed, &sec, true).unwrap();
+        let rep = check(&mut f, &parsed, &sec, true, None).unwrap();
         assert_eq!(rep.damaged, vec![1]);
         assert_eq!(rep.repaired, vec![1]);
         assert_eq!(
@@ -572,7 +663,7 @@ mod tests {
         broken[10] ^= 0xFF; // shard 0
         broken[140] ^= 0xFF; // shard 1
         let mut f = Cursor::new(broken);
-        let rep = check(&mut f, &parsed, &sec, true).unwrap();
+        let rep = check(&mut f, &parsed, &sec, true, None).unwrap();
         assert_eq!(rep.repaired.len(), 2);
         assert_eq!(f.into_inner(), d);
     }
@@ -590,7 +681,7 @@ mod tests {
             broken[off] ^= 0xFF;
         }
         let mut f = Cursor::new(broken);
-        let e = check(&mut f, &parsed, &sec, true).unwrap_err();
+        let e = check(&mut f, &parsed, &sec, true, None).unwrap_err();
         assert!(matches!(e, Error::Unrepairable(_)), "{e:?}");
     }
 
@@ -608,9 +699,51 @@ mod tests {
             *b = 0;
         }
         let mut f = Cursor::new(broken);
-        let rep = check(&mut f, &parsed, &sec, true).unwrap();
+        let rep = check(&mut f, &parsed, &sec, true, None).unwrap();
         assert_eq!(rep.repaired, vec![0, 1]);
         assert_eq!(f.into_inner(), d);
+    }
+
+    /// A damaged recovery shard must be treated as an erasure, not fed to the decoder.
+    /// Trusting it produces a reconstruction that "succeeds" and is wrong — caught here
+    /// only because the rebuilt shard then failed its own CRC.
+    #[test]
+    fn damaged_parity_shards_are_not_trusted() {
+        let c = cfg();
+        let d = data(500); // one stripe, 4 data + 2 parity
+        let mut sec = encode(&mut Cursor::new(&d), d.len() as u64, &c).unwrap();
+        let parsed = parse_section(&sec).unwrap();
+        assert_eq!(parsed.parity_crcs.len(), 2);
+
+        // Break one data shard and one recovery shard: still within capacity.
+        let mut broken = d.clone();
+        broken[10] ^= 0xFF;
+        sec[parsed.parity_offset + 5] ^= 0xFF;
+
+        let mut f = Cursor::new(broken);
+        let rep = check(&mut f, &parsed, &sec, true, None).unwrap();
+        assert_eq!(rep.repaired, vec![0]);
+        assert_eq!(f.into_inner(), d, "repair was not byte-exact");
+    }
+
+    /// …and losing a data shard *and* both recovery shards exceeds capacity, even though
+    /// only one data shard is missing.
+    #[test]
+    fn damaged_parity_counts_against_the_budget() {
+        let c = cfg();
+        let d = data(500);
+        let mut sec = encode(&mut Cursor::new(&d), d.len() as u64, &c).unwrap();
+        let parsed = parse_section(&sec).unwrap();
+
+        let mut broken = d.clone();
+        broken[10] ^= 0xFF;
+        sec[parsed.parity_offset + 5] ^= 0xFF;
+        sec[parsed.parity_offset + c.shard_size + 5] ^= 0xFF;
+
+        let mut f = Cursor::new(broken);
+        let e = check(&mut f, &parsed, &sec, true, None).unwrap_err();
+        assert!(matches!(e, Error::Unrepairable(_)), "{e:?}");
+        assert!(e.to_string().contains("recovery shard"), "{e}");
     }
 
     /// The metadata is stored twice so losing one copy is survivable.

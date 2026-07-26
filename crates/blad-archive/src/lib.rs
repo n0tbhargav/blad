@@ -1643,12 +1643,12 @@ pub fn repair(archive_path: &Path, apply: bool) -> Result<RepairReport> {
         .read(true)
         .write(apply)
         .open(archive_path)?;
-    let report = blad_parity::check(&mut file, &parsed, &section, apply)?;
+    let report = blad_parity::check(&mut file, &parsed, &section, apply, Some(foot.parity_off))?;
 
     Ok(RepairReport {
         has_parity: true,
-        damaged: report.damaged.len(),
-        repaired: report.repaired.len(),
+        damaged: report.total_damaged(),
+        repaired: report.repaired.len() + report.repaired_parity.len(),
         repairable: true,
         shard_size: cfg.shard_size,
         coverage_percent: cfg.overhead_percent(),

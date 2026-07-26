@@ -679,6 +679,17 @@ two of three copies of each.
   `--dry-run` and then failed, because it checked capacity per stripe only on the repair
   path. A dry run that lies is worse than no dry run.
 
+**Recovery shards are checksummed too, and repaired.** Found by re-running an
+intentionally harsh corruption at higher parity: capacity was sufficient, yet repair
+failed with "shard still fails its checksum after reconstruction". Cause — some of the
+scattered damage had landed *in the parity section*, and damaged recovery shards were
+being handed to the decoder as though sound. A reconstruction that "succeeds" and is
+wrong is the worst possible outcome here; it was caught only because the rebuilt shard
+then failed its own CRC. Now every parity shard carries a CRC, a damaged one is treated
+as the erasure it is, it counts against the same budget (k of k+m must survive), and it
+is rebuilt in place — otherwise protection erodes silently, the data reading fine today
+while the margin that would save it next time has quietly gone.
+
 Verified: zero two sectors of a real archive, `restore` fails, `repair` restores the
 archive **byte-identically**, and the original then restores byte-identically.
 
